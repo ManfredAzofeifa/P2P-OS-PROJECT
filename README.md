@@ -1,67 +1,188 @@
-# Simulador P2P — IC-6600 Principios de Sistemas Operativos
+# P2P File-Sharing Simulator
 
-Proyecto 2 · I Semestre 2026 · Instituto Tecnológico de Costa Rica
+Operating Systems course project for simulating peer-to-peer file discovery and transfer on standard Linux using C, POSIX threads, and sockets.
 
-## Descripción
+This repository should stay in C for the project implementation. Shell scripts are allowed only as test harnesses, and the documentation may stay in LaTeX.
 
-Simulación de un sistema P2P que se comunica a través de sockets para localizar y transferir archivos en red. Incluye búsqueda centralizada (vía servidor) y búsqueda distribuida (vía vecinos con TTL).
+## Project Objective
 
-## Integrantes
+Build a P2P file-sharing simulator where clients register local files, discover peers that own a file, and download file contents from one or more peers.
 
-| Persona | Módulo responsable |
-|---|---|
-| Persona 1 | Protocolo, hash, servidor P2P |
-| Persona 2 | Cliente, transferencia, armado de archivos |
-| Persona 3 | Búsqueda distribuida, vecinos, control de propagación |
+The simulator must support:
 
-## Estructura del proyecto
+- A custom content hash implemented in this repository, without hash libraries.
+- A central P2P server that stores metadata: hash, size, owner IP, and owner transfer port.
+- P2P clients that register shared-folder files at startup.
+- Console commands:
+  - `find -s <name>` for centralized server search.
+  - `find -d <name>` for distributed neighbor search.
+  - `find <name>` to try server search first, then distributed search on timeout.
+  - `request <S> <H>` to fetch a file by size and hash.
+- File transfer by byte ranges, split across multiple peers when possible.
+- Distributed flood search with TTL, query IDs, direct replies to the originator, duplicate-query dropping, and seen-query expiration.
+- Resilience when a shared folder or mounted device disappears while a client is running.
 
+## Implementation Rules
+
+- Use C, not C++.
+- Use standard Linux APIs, sockets, and `pthread`.
+- Do not add external libraries.
+- Keep the socket protocol line-oriented and documented in `protocol/protocol.h`.
+- Keep shared protocol constants and structs in headers rather than duplicating literals across modules.
+- Prefer small component tests before full integration tests.
+
+## Current State
+
+Implemented:
+
+- Shared protocol constants and message contract in `protocol/protocol.h`.
+- Shared endpoint and file metadata structs in `server/metadata.h`.
+- Custom content hash in `server/hash.c` and `server/hash.h`.
+- Threaded TCP server in `server/server.c`.
+- Server-side metadata registry protected by a mutex.
+- Server protocol support for:
+  - `REGISTER <transfer_port> <file_count>`
+  - `FILE <size> <hash> <name>`
+  - `END`
+  - `FIND <name>`
+  - `LOOKUP <size> <hash>`
+- Server returns recent active clients as neighbors during registration.
+- Client startup in `client/client.c`.
+- Client CLI parsing for:
+  ```bash
+  ./bin/client <server_ip> <server_port> <transfer_port> <shared_folder>
+  ```
+- Shared-folder scan for regular files.
+- Client-side file size and custom-hash calculation.
+- Client registration with the server.
+- Client parsing and in-memory storage for returned neighbors.
+- Minimal console loop in `client/console.c` with:
+  - `files`
+  - `neighbors`
+  - `quit`
+  - `exit`
+- Startup resilience for missing shared folders: the client warns, registers zero files, and does not crash.
+- Tests for hash behavior, server protocol behavior, and client registration.
+
+Pending:
+
+- Centralized client search using `FIND`.
+- File lookup/download using `LOOKUP` and peer transfer requests.
+- Serving files to peers, with one thread per incoming request.
+- Multi-peer segmented download and reassembly.
+- Distributed search neighbor protocol.
+- Query ID cache, TTL forwarding, duplicate dropping, and expiration.
+- Full multi-client integration tests.
+
+## Recommended Next Work
+
+The next component should be centralized client search:
+
+1. Implement `find -s <name>` in the client console.
+2. Connect to the server and send `FIND <name>`.
+3. Parse `PEERS`, `PEER`, and `END`.
+4. Print matching peers clearly.
+5. Add a test that starts server + client, registers files, sends `find -s`, and verifies the output.
+
+After that, implement `request <S> <H>` lookup/download setup, then peer file serving.
+
+## Socket Protocol
+
+The protocol is documented in `protocol/protocol.h`.
+
+Server-facing messages:
+
+```text
+REGISTER <transfer_port> <file_count>
+FILE <size> <hash> <name>
+END
+FIND <name>
+LOOKUP <size> <hash>
 ```
-p2p-simulator/
-├── server/        # Servidor P2P y función de hash
-├── client/        # Cliente P2P, consola y transferencia
-├── distributed/   # Búsqueda distribuida y vecinos
-├── protocol/      # Protocolo de comunicación compartido
-├── docs/          # Documentación en LaTeX
-└── tests/         # Scripts de prueba
+
+Server responses:
+
+```text
+OK <text>
+ERROR <text>
+PEERS <count>
+PEER <ip> <port>
+NEIGHBORS <count>
+NEIGHBOR <ip> <port>
+END
 ```
 
-## Compilar
+Peer transfer and distributed-search messages are reserved in the protocol header and should be implemented in later components.
+
+## Build
+
+Build the server:
 
 ```bash
-make        # compila servidor y cliente
-make clean  # elimina binarios
+make server
 ```
 
-## Uso
+Build every currently implemented binary:
 
 ```bash
-# Levantar servidor
-./bin/server <puerto>
-
-# Levantar cliente
-./bin/client <ip_servidor> <puerto_servidor> <puerto_propio> <carpeta_compartida>
-
-# Comandos del cliente
-find -s <nombre>   # búsqueda centralizada
-find -d <nombre>   # búsqueda distribuida
-find <nombre>      # intenta centralizada, cae a distribuida si el servidor no responde
-request <S> <H>    # solicitar archivo por tamaño y hash
+make
 ```
 
-## Cronograma
+At this point, `make` builds both the server and the client.
 
-| Semana | Fechas | Hito |
-|---|---|---|
-| S1–S2 | Sep 22 – Oct 5 | Protocolo definido, hash implementado, cliente base |
-| S3–S4 | Oct 6 – Oct 19 | Servidor completo, transferencia por segmentos |
-| S4–S6 | Oct 13 – Nov 2 | Búsqueda distribuida, vecinos, TTL |
-| S5–S7 | Oct 20 – Nov 9 | Integración, pruebas en red real (LAIIMI) |
-| S6–S8 | Oct 27 – Nov 16 | Documentación LaTeX, correcciones finales |
-| **S8** | **Nov 19** | **Entrega final** |
+Clean generated binaries:
 
-## Entrega
+```bash
+make clean
+```
 
-- Formato: PDF de la documentación + código al correo `edramirez@itcr.ac.cr`
-- Asunto: `IC-6600 Proyecto 2 [Nombres de los integrantes]`
-- El programa debe correr en Linux estándar con clientes en la misma red.
+## Tests
+
+Run all current tests:
+
+```bash
+make test
+```
+
+Current test targets:
+
+- `make test-hash`
+  - Builds `tests/test_hash.c` with `server/hash.c`.
+  - Verifies same file contents produce the same hash even with different names.
+  - Verifies different contents produce a different hash.
+- `make test-server`
+  - Builds `bin/server`.
+  - Starts the server on localhost.
+  - Registers one file through the socket protocol.
+  - Verifies `FIND` returns the registering peer.
+  - Verifies `LOOKUP` returns the registering peer by size and hash.
+- `make test-client`
+  - Builds `bin/server` and `bin/client`.
+  - Starts the server on localhost.
+  - Runs the client against a temporary shared folder.
+  - Verifies the client registers two files.
+  - Verifies the server can find one of those files afterward.
+  - Verifies a missing shared folder does not crash the client and registers zero files.
+
+The server test binds a local TCP port. If a sandbox blocks listening sockets, run it in a normal terminal or allow the test command to bind localhost.
+
+## Repository Layout
+
+```text
+.
+├── client/        # Client startup, console, and transfer code
+├── distributed/   # Flood search, neighbors, TTL, and seen-query tracking
+├── docs/          # Course documentation in LaTeX
+├── protocol/      # Shared socket protocol constants and structs
+├── server/        # P2P server, metadata, and custom hash
+└── tests/         # C tests and shell harnesses
+```
+
+## Notes For Future Agents
+
+- Start by reading this file, `protocol/protocol.h`, and `Makefile`.
+- Check `git status --short` before editing.
+- Work one component at a time.
+- Keep behavior covered by `make test` as each component becomes available.
+- Do not replace C code with C++ or external dependencies.
+- Do not remove existing user changes unless explicitly asked.
