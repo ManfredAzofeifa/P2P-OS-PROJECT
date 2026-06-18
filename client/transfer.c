@@ -4,6 +4,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -14,6 +15,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#include "../server/hash.h"
 
 #define TRANSFER_BACKLOG 16
 #define TRANSFER_BUFFER_SIZE 8192
@@ -283,6 +286,202 @@ static int create_listen_socket(uint16_t port) {
     }
 
     return fd;
+}
+
+static int read_exact(int fd, unsigned char *buffer, size_t len) {
+    size_t total = 0;
+
+    while (total < len) {
+        ssize_t nread = recv(fd, buffer + total, len - total, 0);
+
+        if (nread == 0) {
+            return -1;
+        }
+        if (nread < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        total += (size_t)nread;
+    }
+
+    return 0;
+}
+
+static int connect_to_peer(const p2p_endpoint_t *peer) {
+    struct addrinfo hints;
+    struct addrinfo *results = NULL;
+    struct addrinfo *it;
+    char port_text[16];
+    int fd = -1;
+
+    snprintf(port_text, sizeof(port_text), "%u", peer->port);
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if (getaddrinfo(peer->ip, port_text, &hints, &results) != 0) {
+        return -1;
+    }
+
+    for (it = results; it != NULL; it = it->ai_next) {
+        fd = socket(it->ai_family, it->ai_socktype, it->ai_protocol);
+        if (fd < 0) {
+            continue;
+        }
+        if (connect(fd, it->ai_addr, it->ai_addrlen) == 0) {
+            break;
+        }
+        close(fd);
+        fd = -1;
+    }
+
+    freeaddrinfo(results);
+    return fd;
+}
+
+static int file_matches_request(const char *path, uint64_t size, const char *hash) {
+    struct stat st;
+    char actual_hash[P2P_HASH_STR_LEN];
+
+    if (stat(path, &st) != 0) {
+        return 0;
+    }
+    if (!S_ISREG(st.st_mode) || (uint64_t)st.st_size != size) {
+        return -1;
+    }
+    if (p2p_hash_file(path, actual_hash) != 0) {
+        return -1;
+    }
+    return strcmp(actual_hash, hash) == 0 ? 1 : -1;
+}
+
+static int build_partial_path(char *out, size_t out_size, const char *path) {
+    int written = snprintf(out, out_size, "%s.part", path);
+
+    if (written < 0 || (size_t)written >= out_size) {
+        return -1;
+    }
+    return 0;
+}
+
+int transfer_download_from_peer(const p2p_client_context_t *context,
+                                const p2p_endpoint_t *peer,
+                                uint64_t size,
+                                const char *hash,
+                                char *saved_path,
+                                size_t saved_path_size,
+                                int *already_present) {
+    int fd;
+    char request[P2P_MAX_LINE];
+    char line[P2P_MAX_LINE];
+    char path[P2P_MAX_PATH];
+    char partial_path[P2P_MAX_PATH];
+    unsigned char buffer[TRANSFER_BUFFER_SIZE];
+    unsigned long long data_length;
+    uint64_t remaining = size;
+    FILE *output;
+    int existing_status;
+
+    if (already_present != NULL) {
+        *already_present = 0;
+    }
+    if (context == NULL || peer == NULL || hash == NULL || strlen(hash) != P2P_HASH_HEX_LEN) {
+        return -1;
+    }
+    if (join_path(path, sizeof(path), context->shared_folder, hash) != 0 ||
+        build_partial_path(partial_path, sizeof(partial_path), path) != 0) {
+        return -1;
+    }
+
+    existing_status = file_matches_request(path, size, hash);
+    if (existing_status > 0) {
+        if (saved_path != NULL && saved_path_size > 0) {
+            snprintf(saved_path, saved_path_size, "%s", path);
+        }
+        if (already_present != NULL) {
+            *already_present = 1;
+        }
+        return 0;
+    }
+    if (existing_status < 0) {
+        return -1;
+    }
+
+    fd = connect_to_peer(peer);
+    if (fd < 0) {
+        return -1;
+    }
+
+    snprintf(request, sizeof(request), "GET %llu %s 0 %llu\n",
+             (unsigned long long)size, hash, (unsigned long long)size);
+    if (write_text(fd, request) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    if (read_line(fd, line, sizeof(line)) <= 0) {
+        close(fd);
+        return -1;
+    }
+
+    if (strncmp(line, "ERROR ", 6) == 0) {
+        fprintf(stderr, "peer %s:%u returned %s\n", peer->ip, peer->port, line);
+        close(fd);
+        return -1;
+    }
+    if (sscanf(line, "DATA %llu", &data_length) != 1 || data_length != size) {
+        close(fd);
+        return -1;
+    }
+
+    unlink(partial_path);
+    output = fopen(partial_path, "wb");
+    if (output == NULL) {
+        close(fd);
+        return -1;
+    }
+
+    while (remaining > 0) {
+        size_t chunk = remaining > sizeof(buffer) ? sizeof(buffer) : (size_t)remaining;
+
+        if (read_exact(fd, buffer, chunk) != 0) {
+            fclose(output);
+            close(fd);
+            unlink(partial_path);
+            return -1;
+        }
+        if (fwrite(buffer, 1, chunk, output) != chunk) {
+            fclose(output);
+            close(fd);
+            unlink(partial_path);
+            return -1;
+        }
+        remaining -= chunk;
+    }
+
+    if (fclose(output) != 0) {
+        close(fd);
+        unlink(partial_path);
+        return -1;
+    }
+    close(fd);
+
+    if (file_matches_request(partial_path, size, hash) <= 0) {
+        unlink(partial_path);
+        return -1;
+    }
+    if (link(partial_path, path) != 0) {
+        unlink(partial_path);
+        return -1;
+    }
+    unlink(partial_path);
+
+    if (saved_path != NULL && saved_path_size > 0) {
+        snprintf(saved_path, saved_path_size, "%s", path);
+    }
+    return 0;
 }
 
 int transfer_server_start(const p2p_client_context_t *context) {

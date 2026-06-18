@@ -65,6 +65,10 @@ Implemented:
   - `exit`
 - Centralized client search using `FIND`, including peer response parsing and no-match reporting.
 - Request lookup setup using `LOOKUP`, including candidate peer parsing and no-match reporting.
+- Client download requests from one candidate peer transfer port.
+- `request <S> <H>` saves successful downloads as `<shared_folder>/<hash>` because the command does not include a file name.
+- Existing matching downloads are reused instead of overwritten; mismatched existing files fail the download.
+- Partial download files use a `.part` suffix and are removed on transfer failure.
 - Peer file serving in `client/transfer.c`.
 - Client transfer listener on `<transfer_port>`.
 - Peer transfer support for:
@@ -74,11 +78,10 @@ Implemented:
 - One detached thread per incoming transfer request.
 - Byte-range reads from local files by size and hash.
 - Startup resilience for missing shared folders: the client warns, registers zero files, and does not crash.
-- Tests for hash behavior, server protocol behavior, client registration, centralized client search, request lookup, and peer range serving.
+- Tests for hash behavior, server protocol behavior, client registration, centralized client search, request lookup, single-peer downloads, unavailable peers, failed transfers, and peer range serving.
 
 Pending:
 
-- Client download requests to peer transfer ports.
 - Multi-peer segmented download and reassembly.
 - Distributed search neighbor protocol.
 - Query ID cache, TTL forwarding, duplicate dropping, and expiration.
@@ -86,16 +89,13 @@ Pending:
 
 ## Recommended Next Work
 
-The next component should be client-side downloads:
+The next component should be multi-peer segmented download and reassembly:
 
-1. Extend `request <S> <H>` beyond lookup.
-2. Connect to one candidate peer.
-3. Send `GET <size> <hash> <offset> <length>`.
-4. Parse `DATA <length>` or `ERROR <text>`.
-5. Save the downloaded file into the shared folder.
-6. Handle unavailable peers without crashing.
-
-After that, implement segmented downloads across multiple peers.
+1. Use multiple candidate peers returned by `LOOKUP` when available.
+2. Split the requested file into byte ranges.
+3. Send `GET <size> <hash> <offset> <length>` requests for each range.
+4. Reassemble downloaded ranges into the final `<shared_folder>/<hash>` file.
+5. Keep single-peer fallback behavior when only one candidate peer is available.
 
 ## Socket Protocol
 
@@ -184,7 +184,10 @@ Current test targets:
   - Sends `find -s` through the client console and verifies a matching peer is printed.
   - Sends `find -s` for a missing file and verifies no-match reporting.
   - Sends `request <S> <H>` and verifies candidate peers are printed.
+  - Verifies `request <S> <H>` downloads from one candidate peer into `<shared_folder>/<hash>`.
+  - Verifies an existing matching downloaded file is reused instead of overwritten.
   - Sends `request` for missing metadata and verifies no-match reporting.
+  - Verifies unavailable peers and failed transfers report failure without leaving output or `.part` files.
   - Sends `GET` directly to the client's transfer port and verifies a byte range is returned.
   - Verifies the server can find one of those files afterward.
   - Verifies a missing shared folder does not crash the client and registers zero files.

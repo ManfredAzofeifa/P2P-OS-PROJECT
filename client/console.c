@@ -1,6 +1,7 @@
 /* console.c - Interfaz de consola: find y request */
 
 #include "client.h"
+#include "transfer.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -90,8 +91,10 @@ static int parse_request_args(const char *args, uint64_t *size, char hash[P2P_HA
 static void handle_request_lookup(const p2p_client_context_t *context, const char *args) {
     uint64_t size;
     char hash[P2P_HASH_STR_LEN];
+    char saved_path[P2P_MAX_PATH];
     p2p_endpoint_t peers[P2P_MAX_PEERS];
     size_t peer_count = 0;
+    int already_present = 0;
 
     if (parse_request_args(args, &size, hash) != 0) {
         printf("usage: request <size> <hash>\n");
@@ -113,7 +116,19 @@ static void handle_request_lookup(const p2p_client_context_t *context, const cha
     for (size_t i = 0; i < peer_count; i++) {
         printf("%s %u\n", peers[i].ip, peers[i].port);
     }
-    printf("download not implemented in this component yet\n");
+
+    if (transfer_download_from_peer(context, &peers[0], size, hash,
+                                    saved_path, sizeof(saved_path),
+                                    &already_present) != 0) {
+        printf("download failed from %s %u\n", peers[0].ip, peers[0].port);
+        return;
+    }
+
+    if (already_present) {
+        printf("download already present at %s\n", saved_path);
+    } else {
+        printf("downloaded %llu %s to %s\n", (unsigned long long)size, hash, saved_path);
+    }
 }
 
 void client_run_console(p2p_client_context_t *context) {
