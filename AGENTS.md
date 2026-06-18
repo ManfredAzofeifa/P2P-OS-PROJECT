@@ -9,4 +9,4 @@ Important constraints:
 - Do not add external libraries.
 - Work one component at a time.
 - Keep `make test` passing when possible.
-- The next planned component is multi-peer segmented download and reassembly.
+- The next planned component is the distributed search neighbor protocol.

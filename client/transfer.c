@@ -4,6 +4,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <pthread.h>
@@ -480,6 +481,273 @@ int transfer_download_from_peer(const p2p_client_context_t *context,
 
     if (saved_path != NULL && saved_path_size > 0) {
         snprintf(saved_path, saved_path_size, "%s", path);
+    }
+    return 0;
+}
+
+typedef struct {
+    const p2p_client_context_t *context;
+    const p2p_endpoint_t *peer;
+    uint64_t size;
+    const char *hash;
+    const char *partial_path;
+    uint64_t offset;
+    uint64_t length;
+    int result;
+} range_download_t;
+
+static int create_empty_file(const char *path, uint64_t size) {
+    int fd = open(path, O_CREAT | O_TRUNC | O_WRONLY, 0600);
+
+    if (fd < 0) {
+        return -1;
+    }
+    if (ftruncate(fd, (off_t)size) != 0) {
+        close(fd);
+        unlink(path);
+        return -1;
+    }
+    close(fd);
+    return 0;
+}
+
+static int download_range_to_path(const p2p_endpoint_t *peer,
+                                  uint64_t size,
+                                  const char *hash,
+                                  uint64_t offset,
+                                  uint64_t length,
+                                  const char *partial_path) {
+    int fd;
+    char request[P2P_MAX_LINE];
+    char line[P2P_MAX_LINE];
+    unsigned char buffer[TRANSFER_BUFFER_SIZE];
+    unsigned long long data_length;
+    uint64_t remaining = length;
+    FILE *output;
+
+    fd = connect_to_peer(peer);
+    if (fd < 0) {
+        return -1;
+    }
+
+    snprintf(request, sizeof(request), "GET %llu %s %llu %llu\n",
+             (unsigned long long)size, hash,
+             (unsigned long long)offset, (unsigned long long)length);
+    if (write_text(fd, request) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    if (read_line(fd, line, sizeof(line)) <= 0) {
+        close(fd);
+        return -1;
+    }
+    if (strncmp(line, "ERROR ", 6) == 0) {
+        fprintf(stderr, "peer %s:%u returned %s\n", peer->ip, peer->port, line);
+        close(fd);
+        return -1;
+    }
+    if (sscanf(line, "DATA %llu", &data_length) != 1 || data_length != length) {
+        close(fd);
+        return -1;
+    }
+
+    output = fopen(partial_path, "r+b");
+    if (output == NULL) {
+        close(fd);
+        return -1;
+    }
+    if (fseeko(output, (off_t)offset, SEEK_SET) != 0) {
+        fclose(output);
+        close(fd);
+        return -1;
+    }
+
+    while (remaining > 0) {
+        size_t chunk = remaining > sizeof(buffer) ? sizeof(buffer) : (size_t)remaining;
+
+        if (read_exact(fd, buffer, chunk) != 0) {
+            fclose(output);
+            close(fd);
+            return -1;
+        }
+        if (fwrite(buffer, 1, chunk, output) != chunk) {
+            fclose(output);
+            close(fd);
+            return -1;
+        }
+        remaining -= chunk;
+    }
+
+    if (fclose(output) != 0) {
+        close(fd);
+        return -1;
+    }
+    close(fd);
+    return 0;
+}
+
+static void *range_download_thread(void *arg) {
+    range_download_t *range = arg;
+
+    range->result = download_range_to_path(range->peer, range->size, range->hash,
+                                           range->offset, range->length,
+                                           range->partial_path);
+    return NULL;
+}
+
+static int install_partial_file(const char *partial_path,
+                                const char *path,
+                                uint64_t size,
+                                const char *hash) {
+    if (file_matches_request(partial_path, size, hash) <= 0) {
+        unlink(partial_path);
+        return -1;
+    }
+    if (link(partial_path, path) != 0) {
+        unlink(partial_path);
+        return -1;
+    }
+    unlink(partial_path);
+    return 0;
+}
+
+int transfer_download_from_peers(const p2p_client_context_t *context,
+                                 const p2p_endpoint_t *peers,
+                                 size_t peer_count,
+                                 uint64_t size,
+                                 const char *hash,
+                                 char *saved_path,
+                                 size_t saved_path_size,
+                                 int *already_present,
+                                 int *segmented) {
+    char path[P2P_MAX_PATH];
+    char partial_path[P2P_MAX_PATH];
+    range_download_t ranges[P2P_MAX_PEERS];
+    pthread_t threads[P2P_MAX_PEERS];
+    size_t range_count;
+    uint64_t offset = 0;
+    uint64_t base;
+    uint64_t extra;
+    int existing_status;
+    int failed = 0;
+
+    if (already_present != NULL) {
+        *already_present = 0;
+    }
+    if (segmented != NULL) {
+        *segmented = 0;
+    }
+    if (context == NULL || peers == NULL || peer_count == 0 ||
+        hash == NULL || strlen(hash) != P2P_HASH_HEX_LEN) {
+        return -1;
+    }
+
+    if (peer_count == 1 || size == 0) {
+        return transfer_download_from_peer(context, &peers[0], size, hash,
+                                           saved_path, saved_path_size,
+                                           already_present);
+    }
+
+    if (join_path(path, sizeof(path), context->shared_folder, hash) != 0 ||
+        build_partial_path(partial_path, sizeof(partial_path), path) != 0) {
+        return -1;
+    }
+
+    existing_status = file_matches_request(path, size, hash);
+    if (existing_status > 0) {
+        if (saved_path != NULL && saved_path_size > 0) {
+            snprintf(saved_path, saved_path_size, "%s", path);
+        }
+        if (already_present != NULL) {
+            *already_present = 1;
+        }
+        return 0;
+    }
+    if (existing_status < 0) {
+        return -1;
+    }
+
+    range_count = peer_count > P2P_MAX_PEERS ? P2P_MAX_PEERS : peer_count;
+    if ((uint64_t)range_count > size) {
+        range_count = (size_t)size;
+    }
+
+    unlink(partial_path);
+    if (create_empty_file(partial_path, size) != 0) {
+        return -1;
+    }
+
+    base = size / range_count;
+    extra = size % range_count;
+    memset(ranges, 0, sizeof(ranges));
+    for (size_t i = 0; i < range_count; i++) {
+        ranges[i].context = context;
+        ranges[i].peer = &peers[i];
+        ranges[i].size = size;
+        ranges[i].hash = hash;
+        ranges[i].partial_path = partial_path;
+        ranges[i].offset = offset;
+        ranges[i].length = base + (i < extra ? 1 : 0);
+        ranges[i].result = -1;
+        offset += ranges[i].length;
+
+        if (pthread_create(&threads[i], NULL, range_download_thread, &ranges[i]) != 0) {
+            ranges[i].result = -1;
+            failed = 1;
+            for (size_t j = 0; j < i; j++) {
+                pthread_join(threads[j], NULL);
+            }
+            break;
+        }
+    }
+
+    if (!failed) {
+        for (size_t i = 0; i < range_count; i++) {
+            pthread_join(threads[i], NULL);
+            if (ranges[i].result != 0) {
+                failed = 1;
+            }
+        }
+    }
+
+    if (failed) {
+        for (size_t i = 0; i < range_count; i++) {
+            if (ranges[i].result == 0) {
+                continue;
+            }
+
+            ranges[i].result = -1;
+            for (size_t j = 0; j < peer_count && j < P2P_MAX_PEERS; j++) {
+                if (&peers[j] == ranges[i].peer) {
+                    continue;
+                }
+                if (download_range_to_path(&peers[j], size, hash,
+                                           ranges[i].offset, ranges[i].length,
+                                           partial_path) == 0) {
+                    ranges[i].result = 0;
+                    break;
+                }
+            }
+        }
+    }
+
+    for (size_t i = 0; i < range_count; i++) {
+        if (ranges[i].result != 0) {
+            unlink(partial_path);
+            return -1;
+        }
+    }
+
+    if (install_partial_file(partial_path, path, size, hash) != 0) {
+        return -1;
+    }
+
+    if (saved_path != NULL && saved_path_size > 0) {
+        snprintf(saved_path, saved_path_size, "%s", path);
+    }
+    if (segmented != NULL) {
+        *segmented = 1;
     }
     return 0;
 }

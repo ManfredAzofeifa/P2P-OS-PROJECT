@@ -66,6 +66,8 @@ Implemented:
 - Centralized client search using `FIND`, including peer response parsing and no-match reporting.
 - Request lookup setup using `LOOKUP`, including candidate peer parsing and no-match reporting.
 - Client download requests from one candidate peer transfer port.
+- Multi-peer segmented download and reassembly when multiple `LOOKUP` candidates are available.
+- Segmented downloads split the file into byte ranges, fetch ranges concurrently, retry failed ranges against remaining peers, and reassemble into `<shared_folder>/<hash>`.
 - `request <S> <H>` saves successful downloads as `<shared_folder>/<hash>` because the command does not include a file name.
 - Existing matching downloads are reused instead of overwritten; mismatched existing files fail the download.
 - Partial download files use a `.part` suffix and are removed on transfer failure.
@@ -78,24 +80,22 @@ Implemented:
 - One detached thread per incoming transfer request.
 - Byte-range reads from local files by size and hash.
 - Startup resilience for missing shared folders: the client warns, registers zero files, and does not crash.
-- Tests for hash behavior, server protocol behavior, client registration, centralized client search, request lookup, single-peer downloads, unavailable peers, failed transfers, and peer range serving.
+- Tests for hash behavior, server protocol behavior, client registration, centralized client search, request lookup, single-peer downloads, segmented downloads, reassembly, peer failover, unavailable peers, failed transfers, and peer range serving.
 
 Pending:
 
-- Multi-peer segmented download and reassembly.
 - Distributed search neighbor protocol.
 - Query ID cache, TTL forwarding, duplicate dropping, and expiration.
 - Full multi-client integration tests.
 
 ## Recommended Next Work
 
-The next component should be multi-peer segmented download and reassembly:
+The next component should be the distributed search neighbor protocol:
 
-1. Use multiple candidate peers returned by `LOOKUP` when available.
-2. Split the requested file into byte ranges.
-3. Send `GET <size> <hash> <offset> <length>` requests for each range.
-4. Reassemble downloaded ranges into the final `<shared_folder>/<hash>` file.
-5. Keep single-peer fallback behavior when only one candidate peer is available.
+1. Add client-to-client distributed search request handling using `DSEARCH`.
+2. Search local shared-file metadata for matching names.
+3. Return matching results to the originator using `DRESULT`.
+4. Keep query ID caching, TTL forwarding, duplicate dropping, and expiration for later components.
 
 ## Socket Protocol
 
@@ -186,6 +186,8 @@ Current test targets:
   - Sends `request <S> <H>` and verifies candidate peers are printed.
   - Verifies `request <S> <H>` downloads from one candidate peer into `<shared_folder>/<hash>`.
   - Verifies an existing matching downloaded file is reused instead of overwritten.
+  - Verifies segmented downloads fetch ranges from multiple peers and reassemble the original file.
+  - Verifies a failed segmented peer can be retried against an available peer.
   - Sends `request` for missing metadata and verifies no-match reporting.
   - Verifies unavailable peers and failed transfers report failure without leaving output or `.part` files.
   - Sends `GET` directly to the client's transfer port and verifies a byte range is returned.

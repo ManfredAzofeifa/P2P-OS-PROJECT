@@ -95,6 +95,7 @@ static void handle_request_lookup(const p2p_client_context_t *context, const cha
     p2p_endpoint_t peers[P2P_MAX_PEERS];
     size_t peer_count = 0;
     int already_present = 0;
+    int segmented = 0;
 
     if (parse_request_args(args, &size, hash) != 0) {
         printf("usage: request <size> <hash>\n");
@@ -117,15 +118,18 @@ static void handle_request_lookup(const p2p_client_context_t *context, const cha
         printf("%s %u\n", peers[i].ip, peers[i].port);
     }
 
-    if (transfer_download_from_peer(context, &peers[0], size, hash,
-                                    saved_path, sizeof(saved_path),
-                                    &already_present) != 0) {
-        printf("download failed from %s %u\n", peers[0].ip, peers[0].port);
+    if (transfer_download_from_peers(context, peers, peer_count, size, hash,
+                                     saved_path, sizeof(saved_path),
+                                     &already_present, &segmented) != 0) {
+        printf("download failed for %llu %s\n", (unsigned long long)size, hash);
         return;
     }
 
     if (already_present) {
         printf("download already present at %s\n", saved_path);
+    } else if (segmented) {
+        printf("downloaded %llu %s to %s using %zu peers\n",
+               (unsigned long long)size, hash, saved_path, peer_count);
     } else {
         printf("downloaded %llu %s to %s\n", (unsigned long long)size, hash, saved_path);
     }

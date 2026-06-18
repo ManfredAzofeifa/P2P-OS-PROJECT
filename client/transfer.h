@@ -11,5 +11,14 @@ int transfer_download_from_peer(const p2p_client_context_t *context,
                                 char *saved_path,
                                 size_t saved_path_size,
                                 int *already_present);
+int transfer_download_from_peers(const p2p_client_context_t *context,
+                                 const p2p_endpoint_t *peers,
+                                 size_t peer_count,
+                                 uint64_t size,
+                                 const char *hash,
+                                 char *saved_path,
+                                 size_t saved_path_size,
+                                 int *already_present,
+                                 int *segmented);
 
 #endif
