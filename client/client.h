@@ -20,6 +20,17 @@ typedef struct {
     size_t neighbor_count;
 } p2p_client_context_t;
 
+int client_find_on_server(const p2p_client_context_t *context,
+                          const char *name,
+                          p2p_endpoint_t *peers,
+                          size_t max_peers,
+                          size_t *peer_count);
+int client_lookup_on_server(const p2p_client_context_t *context,
+                            uint64_t size,
+                            const char *hash,
+                            p2p_endpoint_t *peers,
+                            size_t max_peers,
+                            size_t *peer_count);
 void client_run_console(p2p_client_context_t *context);
 
 #endif

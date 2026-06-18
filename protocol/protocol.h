@@ -39,6 +39,11 @@
  * Client -> Client transfer
  *   GET <size> <hash> <offset> <length>
  *
+ * Client -> Client transfer response
+ *   DATA <length>
+ *   <length raw bytes>
+ *   ERROR <text>
+ *
  * Client -> Client distributed search
  *   DSEARCH <query_id> <origin_ip> <origin_port> <ttl> <term>
  *   DRESULT <query_id> <size> <hash> <name> <owner_ip> <owner_port>

@@ -9,4 +9,4 @@ Important constraints:
 - Do not add external libraries.
 - Work one component at a time.
 - Keep `make test` passing when possible.
-- The next planned component is centralized client search: `find -s <name>`.
+- The next planned component is client-side downloads: make `request <S> <H>` fetch from one candidate peer and save the file into the shared folder.

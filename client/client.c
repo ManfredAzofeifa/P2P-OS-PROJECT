@@ -1,11 +1,13 @@
 /* client.c - Cliente P2P principal */
 
 #include "client.h"
+#include "transfer.h"
 
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <errno.h>
 #include <netdb.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -301,6 +303,133 @@ static int register_with_server(p2p_client_context_t *context) {
     return 0;
 }
 
+int client_find_on_server(const p2p_client_context_t *context,
+                          const char *name,
+                          p2p_endpoint_t *peers,
+                          size_t max_peers,
+                          size_t *peer_count) {
+    int fd;
+    char line[P2P_MAX_LINE];
+    unsigned int expected;
+
+    if (context == NULL || name == NULL || peers == NULL || peer_count == NULL ||
+        name[0] == '\0' || strchr(name, '\n') != NULL) {
+        return -1;
+    }
+
+    *peer_count = 0;
+    fd = connect_to_server(context->server_ip, context->server_port);
+    if (fd < 0) {
+        fprintf(stderr, "cannot connect to server %s:%u\n",
+                context->server_ip, context->server_port);
+        return -1;
+    }
+
+    snprintf(line, sizeof(line), "FIND %s\n", name);
+    if (write_all(fd, line) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    if (read_line(fd, line, sizeof(line)) <= 0) {
+        fprintf(stderr, "server closed before FIND response\n");
+        close(fd);
+        return -1;
+    }
+
+    if (sscanf(line, "PEERS %u", &expected) != 1) {
+        fprintf(stderr, "unexpected FIND response: %s\n", line);
+        close(fd);
+        return -1;
+    }
+
+    while (read_line(fd, line, sizeof(line)) > 0) {
+        char ip[46];
+        unsigned int port;
+
+        if (strcmp(line, "END") == 0) {
+            close(fd);
+            return 0;
+        }
+
+        if (sscanf(line, "PEER %45s %u", ip, &port) == 2 &&
+            port > 0 && port <= 65535U &&
+            *peer_count < max_peers) {
+            p2p_endpoint_t *peer = &peers[*peer_count];
+            snprintf(peer->ip, sizeof(peer->ip), "%s", ip);
+            peer->port = (uint16_t)port;
+            (*peer_count)++;
+        }
+    }
+
+    close(fd);
+    return -1;
+}
+
+int client_lookup_on_server(const p2p_client_context_t *context,
+                            uint64_t size,
+                            const char *hash,
+                            p2p_endpoint_t *peers,
+                            size_t max_peers,
+                            size_t *peer_count) {
+    int fd;
+    char line[P2P_MAX_LINE];
+    unsigned int expected;
+
+    if (context == NULL || hash == NULL || peers == NULL || peer_count == NULL ||
+        strlen(hash) != P2P_HASH_HEX_LEN || strchr(hash, '\n') != NULL) {
+        return -1;
+    }
+
+    *peer_count = 0;
+    fd = connect_to_server(context->server_ip, context->server_port);
+    if (fd < 0) {
+        fprintf(stderr, "cannot connect to server %s:%u\n",
+                context->server_ip, context->server_port);
+        return -1;
+    }
+
+    snprintf(line, sizeof(line), "LOOKUP %llu %s\n", (unsigned long long)size, hash);
+    if (write_all(fd, line) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    if (read_line(fd, line, sizeof(line)) <= 0) {
+        fprintf(stderr, "server closed before LOOKUP response\n");
+        close(fd);
+        return -1;
+    }
+
+    if (sscanf(line, "PEERS %u", &expected) != 1) {
+        fprintf(stderr, "unexpected LOOKUP response: %s\n", line);
+        close(fd);
+        return -1;
+    }
+
+    while (read_line(fd, line, sizeof(line)) > 0) {
+        char ip[46];
+        unsigned int port;
+
+        if (strcmp(line, "END") == 0) {
+            close(fd);
+            return 0;
+        }
+
+        if (sscanf(line, "PEER %45s %u", ip, &port) == 2 &&
+            port > 0 && port <= 65535U &&
+            *peer_count < max_peers) {
+            p2p_endpoint_t *peer = &peers[*peer_count];
+            snprintf(peer->ip, sizeof(peer->ip), "%s", ip);
+            peer->port = (uint16_t)port;
+            (*peer_count)++;
+        }
+    }
+
+    close(fd);
+    return -1;
+}
+
 int main(int argc, char **argv) {
     p2p_client_context_t context;
 
@@ -327,6 +456,13 @@ int main(int argc, char **argv) {
     scan_shared_folder(&context);
 
     if (register_with_server(&context) != 0) {
+        return 1;
+    }
+
+    signal(SIGPIPE, SIG_IGN);
+
+    if (transfer_server_start(&context) != 0) {
+        fprintf(stderr, "cannot start transfer server on port %u\n", context.transfer_port);
         return 1;
     }
 

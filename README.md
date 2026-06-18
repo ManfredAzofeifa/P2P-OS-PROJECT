@@ -59,16 +59,26 @@ Implemented:
 - Minimal console loop in `client/console.c` with:
   - `files`
   - `neighbors`
+  - `find -s <name>`
+  - `request <S> <H>`
   - `quit`
   - `exit`
+- Centralized client search using `FIND`, including peer response parsing and no-match reporting.
+- Request lookup setup using `LOOKUP`, including candidate peer parsing and no-match reporting.
+- Peer file serving in `client/transfer.c`.
+- Client transfer listener on `<transfer_port>`.
+- Peer transfer support for:
+  - `GET <size> <hash> <offset> <length>`
+  - `DATA <length>` followed by raw bytes
+  - `ERROR <text>`
+- One detached thread per incoming transfer request.
+- Byte-range reads from local files by size and hash.
 - Startup resilience for missing shared folders: the client warns, registers zero files, and does not crash.
-- Tests for hash behavior, server protocol behavior, and client registration.
+- Tests for hash behavior, server protocol behavior, client registration, centralized client search, request lookup, and peer range serving.
 
 Pending:
 
-- Centralized client search using `FIND`.
-- File lookup/download using `LOOKUP` and peer transfer requests.
-- Serving files to peers, with one thread per incoming request.
+- Client download requests to peer transfer ports.
 - Multi-peer segmented download and reassembly.
 - Distributed search neighbor protocol.
 - Query ID cache, TTL forwarding, duplicate dropping, and expiration.
@@ -76,15 +86,16 @@ Pending:
 
 ## Recommended Next Work
 
-The next component should be centralized client search:
+The next component should be client-side downloads:
 
-1. Implement `find -s <name>` in the client console.
-2. Connect to the server and send `FIND <name>`.
-3. Parse `PEERS`, `PEER`, and `END`.
-4. Print matching peers clearly.
-5. Add a test that starts server + client, registers files, sends `find -s`, and verifies the output.
+1. Extend `request <S> <H>` beyond lookup.
+2. Connect to one candidate peer.
+3. Send `GET <size> <hash> <offset> <length>`.
+4. Parse `DATA <length>` or `ERROR <text>`.
+5. Save the downloaded file into the shared folder.
+6. Handle unavailable peers without crashing.
 
-After that, implement `request <S> <H>` lookup/download setup, then peer file serving.
+After that, implement segmented downloads across multiple peers.
 
 ## Socket Protocol
 
@@ -112,7 +123,16 @@ NEIGHBOR <ip> <port>
 END
 ```
 
-Peer transfer and distributed-search messages are reserved in the protocol header and should be implemented in later components.
+Peer transfer messages:
+
+```text
+GET <size> <hash> <offset> <length>
+DATA <length>
+<length raw bytes>
+ERROR <text>
+```
+
+Distributed-search messages are reserved in the protocol header and should be implemented in later components.
 
 ## Build
 
@@ -161,6 +181,11 @@ Current test targets:
   - Starts the server on localhost.
   - Runs the client against a temporary shared folder.
   - Verifies the client registers two files.
+  - Sends `find -s` through the client console and verifies a matching peer is printed.
+  - Sends `find -s` for a missing file and verifies no-match reporting.
+  - Sends `request <S> <H>` and verifies candidate peers are printed.
+  - Sends `request` for missing metadata and verifies no-match reporting.
+  - Sends `GET` directly to the client's transfer port and verifies a byte range is returned.
   - Verifies the server can find one of those files afterward.
   - Verifies a missing shared folder does not crash the client and registers zero files.
 
