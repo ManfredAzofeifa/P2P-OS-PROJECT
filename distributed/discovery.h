@@ -1,6 +1,13 @@
 #ifndef DISCOVERY_H
 #define DISCOVERY_H
 
-/* TODO: declaraciones del protocolo de búsqueda distribuida */
+#include <stddef.h>
+#include "../client/client.h"
+
+int distributed_handle_peer_message(const p2p_client_context_t *context,
+                                    const char *line);
+int distributed_search_neighbors(const p2p_client_context_t *context,
+                                 const char *term, p2p_file_metadata_t *results,
+                                 size_t max_results, size_t *result_count);
 
 #endif

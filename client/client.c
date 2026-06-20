@@ -248,6 +248,8 @@ static int parse_neighbors(int fd, p2p_client_context_t *context) {
 static int register_with_server(p2p_client_context_t *context) {
     int fd;
     char line[P2P_MAX_LINE];
+    struct sockaddr_storage local_addr;
+    socklen_t local_addr_len = sizeof(local_addr);
 
     fd = connect_to_server(context->server_ip, context->server_port);
     if (fd < 0) {
@@ -255,6 +257,19 @@ static int register_with_server(p2p_client_context_t *context) {
                 context->server_ip, context->server_port);
         return -1;
     }
+    if (getsockname(fd, (struct sockaddr *)&local_addr, &local_addr_len) == 0) {
+        void *address = NULL;
+        if (local_addr.ss_family == AF_INET) {
+            address = &((struct sockaddr_in *)&local_addr)->sin_addr;
+        } else if (local_addr.ss_family == AF_INET6) {
+            address = &((struct sockaddr_in6 *)&local_addr)->sin6_addr;
+        }
+        if (address != NULL) {
+            inet_ntop(local_addr.ss_family, address,
+                      context->local_ip, sizeof(context->local_ip));
+        }
+    }
+
 
     snprintf(line, sizeof(line), "REGISTER %u %zu\n",
              context->transfer_port, context->file_count);

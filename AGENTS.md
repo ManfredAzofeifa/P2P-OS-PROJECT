@@ -9,4 +9,4 @@ Important constraints:
 - Do not add external libraries.
 - Work one component at a time.
 - Keep `make test` passing when possible.
-- The next planned component is the distributed search neighbor protocol.
+- The next planned component is query ID caching, TTL forwarding, duplicate-query dropping, and seen-query expiration.

@@ -1,6 +1,7 @@
 /* transfer.c - Envio y recepcion de archivos por segmentos */
 
 #include "transfer.h"
+#include "../distributed/discovery.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -199,6 +200,12 @@ static void *transfer_request_thread(void *arg) {
         free(request);
         return NULL;
     }
+    if (distributed_handle_peer_message(request->context, line)) {
+        close(request->fd);
+        free(request);
+        return NULL;
+    }
+
 
     if (sscanf(line, "GET %llu %32s %llu %llu", &size, hash, &offset, &length) != 4 ||
         strlen(hash) != P2P_HASH_HEX_LEN) {

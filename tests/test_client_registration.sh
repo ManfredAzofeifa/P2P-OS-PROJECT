@@ -68,6 +68,18 @@ grep -q "transfer server listening on port 42001" "$CLIENT_LOG"
 
 ALPHA_SIZE="$(awk '$NF == "alpha.txt" { print $(NF - 2); exit }' "$CLIENT_LOG")"
 ALPHA_HASH="$(awk '$NF == "alpha.txt" { print $(NF - 1); exit }' "$CLIENT_LOG")"
+SEARCH_DIR="$SHARED_DIR/search-client"
+SEARCH_LOG="$SHARED_DIR/search-client.log"
+mkdir "$SEARCH_DIR"
+printf 'find -d alpha.txt\nfind -d missing.txt\nquit\n' |
+    "$ROOT_DIR/bin/client" 127.0.0.1 "$PORT" 42003 "$SEARCH_DIR" \
+    > "$SEARCH_LOG" 2>&1
+
+grep -q "received 1 neighbors" "$SEARCH_LOG"
+grep -q "distributed matches for alpha.txt: 1" "$SEARCH_LOG"
+grep -q "$ALPHA_SIZE $ALPHA_HASH alpha.txt 127.0.0.1 42001" "$SEARCH_LOG"
+grep -q "no distributed matches for missing.txt" "$SEARCH_LOG"
+
 
 printf 'find -s alpha.txt\nfind -s missing.txt\n' >&8
 

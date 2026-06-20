@@ -2,6 +2,7 @@
 
 #include "client.h"
 #include "transfer.h"
+#include "../distributed/discovery.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -58,6 +59,32 @@ static void handle_find_server(const p2p_client_context_t *context, const char *
         printf("%s %u\n", peers[i].ip, peers[i].port);
     }
 }
+static void handle_find_distributed(const p2p_client_context_t *context,
+                                    const char *name) {
+    p2p_file_metadata_t results[P2P_MAX_PEERS];
+    size_t result_count = 0;
+
+    if (name == NULL || name[0] == '\0') {
+        printf("usage: find -d <name>\n");
+        return;
+    }
+    if (distributed_search_neighbors(context, name, results,
+                                     P2P_MAX_PEERS, &result_count) != 0) {
+        printf("distributed search failed\n");
+        return;
+    }
+    if (result_count == 0) {
+        printf("no distributed matches for %s\n", name);
+        return;
+    }
+    printf("distributed matches for %s: %zu\n", name, result_count);
+    for (size_t i = 0; i < result_count; i++) {
+        printf("%llu %s %s %s %u\n",
+               (unsigned long long)results[i].size, results[i].hash,
+               results[i].name, results[i].owner.ip, results[i].owner.port);
+    }
+}
+
 
 static int parse_request_args(const char *args, uint64_t *size, char hash[P2P_HASH_STR_LEN]) {
     char size_text[32];
@@ -162,6 +189,10 @@ void client_run_console(p2p_client_context_t *context) {
         }
         if (strncmp(line, "find -s ", 8) == 0) {
             handle_find_server(context, line + 8);
+            continue;
+        }
+        if (strncmp(line, "find -d ", 8) == 0) {
+            handle_find_distributed(context, line + 8);
             continue;
         }
         if (strncmp(line, "request ", 8) == 0) {

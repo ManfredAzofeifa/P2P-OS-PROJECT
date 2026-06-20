@@ -60,6 +60,7 @@ Implemented:
   - `files`
   - `neighbors`
   - `find -s <name>`
+  - `find -d <name>`
   - `request <S> <H>`
   - `quit`
   - `exit`
@@ -80,22 +81,24 @@ Implemented:
 - One detached thread per incoming transfer request.
 - Byte-range reads from local files by size and hash.
 - Startup resilience for missing shared folders: the client warns, registers zero files, and does not crash.
+- Direct-neighbor distributed search using the reserved `DSEARCH` and `DRESULT` messages.
+- Local shared-file name matching with direct result replies to the originator.
+- Distributed search output includes matching file size, hash, name, owner IP, and owner port.
 - Tests for hash behavior, server protocol behavior, client registration, centralized client search, request lookup, single-peer downloads, segmented downloads, reassembly, peer failover, unavailable peers, failed transfers, and peer range serving.
 
 Pending:
 
-- Distributed search neighbor protocol.
 - Query ID cache, TTL forwarding, duplicate dropping, and expiration.
 - Full multi-client integration tests.
 
 ## Recommended Next Work
 
-The next component should be the distributed search neighbor protocol:
+The next component should be query ID caching and TTL forwarding:
 
-1. Add client-to-client distributed search request handling using `DSEARCH`.
-2. Search local shared-file metadata for matching names.
-3. Return matching results to the originator using `DRESULT`.
-4. Keep query ID caching, TTL forwarding, duplicate dropping, and expiration for later components.
+1. Cache query IDs received by each client.
+2. Forward new searches to neighbors while decrementing TTL.
+3. Drop duplicate queries and searches whose TTL is exhausted.
+4. Expire seen-query entries after the configured interval.
 
 ## Socket Protocol
 
@@ -132,7 +135,12 @@ DATA <length>
 ERROR <text>
 ```
 
-Distributed-search messages are reserved in the protocol header and should be implemented in later components.
+Direct-neighbor distributed search uses:
+
+```text
+DSEARCH <query_id> <origin_ip> <origin_port> <ttl> <term>
+DRESULT <query_id> <size> <hash> <name> <owner_ip> <owner_port>
+```
 
 ## Build
 
@@ -181,6 +189,9 @@ Current test targets:
   - Starts the server on localhost.
   - Runs the client against a temporary shared folder.
   - Verifies the client registers two files.
+  - Starts a second client with the first client as its neighbor.
+  - Verifies `find -d` returns matching peer and file metadata.
+  - Verifies `find -d` reports a missing file cleanly.
   - Sends `find -s` through the client console and verifies a matching peer is printed.
   - Sends `find -s` for a missing file and verifies no-match reporting.
   - Sends `request <S> <H>` and verifies candidate peers are printed.

@@ -11,6 +11,7 @@
 
 typedef struct {
     char server_ip[46];
+    char local_ip[46];
     uint16_t server_port;
     uint16_t transfer_port;
     char shared_folder[P2P_MAX_PATH];

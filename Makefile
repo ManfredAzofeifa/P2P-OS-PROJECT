@@ -8,9 +8,9 @@ server: server/server.c server/hash.c
 	mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $(BIN_DIR)/server server/server.c server/hash.c
 
-client: client/client.c client/client.h client/transfer.c client/console.c server/hash.c
+client: client/client.c client/client.h client/transfer.c client/console.c distributed/discovery.c server/hash.c
 	mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) -o $(BIN_DIR)/client client/client.c client/transfer.c client/console.c server/hash.c
+	$(CC) $(CFLAGS) -o $(BIN_DIR)/client client/client.c client/transfer.c client/console.c distributed/discovery.c server/hash.c
 
 test: test-hash test-server test-client
 
