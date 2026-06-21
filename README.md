@@ -83,22 +83,24 @@ Implemented:
 - Startup resilience for missing shared folders: the client warns, registers zero files, and does not crash.
 - Direct-neighbor distributed search using the reserved `DSEARCH` and `DRESULT` messages.
 - Local shared-file name matching with direct result replies to the originator.
+- Bounded, mutex-protected query ID cache for distributed searches.
+- TTL decrementing and forwarding to neighbors until TTL is exhausted.
+- Duplicate distributed-query suppression.
+- Seen-query expiration using `P2P_SEEN_QUERY_TTL_SECONDS`.
 - Distributed search output includes matching file size, hash, name, owner IP, and owner port.
 - Tests for hash behavior, server protocol behavior, client registration, centralized client search, request lookup, single-peer downloads, segmented downloads, reassembly, peer failover, unavailable peers, failed transfers, and peer range serving.
 
 Pending:
 
-- Query ID cache, TTL forwarding, duplicate dropping, and expiration.
 - Full multi-client integration tests.
 
 ## Recommended Next Work
 
-The next component should be query ID caching and TTL forwarding:
+The next component should be full multi-client integration tests:
 
-1. Cache query IDs received by each client.
-2. Forward new searches to neighbors while decrementing TTL.
-3. Drop duplicate queries and searches whose TTL is exhausted.
-4. Expire seen-query entries after the configured interval.
+1. Exercise distributed flooding across multiple client processes.
+2. Verify direct results from peers beyond the originator's immediate neighbors.
+3. Cover loop suppression and TTL boundaries across a complete client topology.
 
 ## Socket Protocol
 
@@ -192,6 +194,10 @@ Current test targets:
   - Starts a second client with the first client as its neighbor.
   - Verifies `find -d` returns matching peer and file metadata.
   - Verifies `find -d` reports a missing file cleanly.
+  - Verifies forwarded `DSEARCH` messages have a decremented TTL.
+  - Verifies searches with an exhausted TTL are not forwarded.
+  - Verifies duplicate query IDs are suppressed.
+  - Verifies expired seen-query entries can be accepted again.
   - Sends `find -s` through the client console and verifies a matching peer is printed.
   - Sends `find -s` for a missing file and verifies no-match reporting.
   - Sends `request <S> <H>` and verifies candidate peers are printed.

@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #define DISTRIBUTED_RESULT_WAIT_MILLISECONDS 500
+#define DISTRIBUTED_MAX_SEEN_QUERIES 1024
 
 typedef struct {
     pthread_mutex_t mutex;
@@ -22,6 +23,17 @@ typedef struct {
     size_t result_count;
     int active;
 } distributed_query_state_t;
+typedef struct {
+    unsigned long long query_id;
+    time_t seen_at;
+} seen_query_entry_t;
+
+typedef struct {
+    pthread_mutex_t mutex;
+    seen_query_entry_t entries[DISTRIBUTED_MAX_SEEN_QUERIES];
+    size_t count;
+} seen_query_state_t;
+
 
 static distributed_query_state_t query_state = {
     PTHREAD_MUTEX_INITIALIZER,
@@ -33,6 +45,10 @@ static distributed_query_state_t query_state = {
     0
 };
 static unsigned long long next_query_id = 1;
+static seen_query_state_t seen_queries = {
+    PTHREAD_MUTEX_INITIALIZER, {{0, 0}}, 0
+};
+
 
 static int write_all(int fd, const char *text) {
     size_t total = 0;
@@ -82,6 +98,61 @@ static int connect_to_endpoint(const char *host, uint16_t port) {
     return fd;
 }
 
+static int seen_entry_expired(const seen_query_entry_t *entry, time_t now) {
+    return now >= entry->seen_at &&
+           now - entry->seen_at >= P2P_SEEN_QUERY_TTL_SECONDS;
+}
+
+static int remember_query(unsigned long long query_id, time_t now) {
+    size_t oldest = 0;
+
+    pthread_mutex_lock(&seen_queries.mutex);
+    for (size_t i = 0; i < seen_queries.count;) {
+        if (seen_entry_expired(&seen_queries.entries[i], now)) {
+            seen_queries.entries[i] = seen_queries.entries[--seen_queries.count];
+            continue;
+        }
+        if (seen_queries.entries[i].query_id == query_id) {
+            pthread_mutex_unlock(&seen_queries.mutex);
+            return 0;
+        }
+        if (seen_queries.entries[i].seen_at <
+            seen_queries.entries[oldest].seen_at) {
+            oldest = i;
+        }
+        i++;
+    }
+
+    if (seen_queries.count < DISTRIBUTED_MAX_SEEN_QUERIES) {
+        oldest = seen_queries.count++;
+    }
+    seen_queries.entries[oldest].query_id = query_id;
+    seen_queries.entries[oldest].seen_at = now;
+    pthread_mutex_unlock(&seen_queries.mutex);
+    return 1;
+}
+
+static void forward_search(const p2p_client_context_t *context,
+                           unsigned long long query_id,
+                           const char *origin_ip,
+                           uint16_t origin_port,
+                           unsigned int ttl,
+                           const char *term) {
+    for (size_t i = 0; i < context->neighbor_count; i++) {
+        char line[P2P_MAX_LINE];
+        int fd = connect_to_endpoint(context->neighbors[i].ip,
+                                     context->neighbors[i].port);
+
+        if (fd < 0) {
+            continue;
+        }
+        snprintf(line, sizeof(line), "DSEARCH %llu %s %u %u %s\n",
+                 query_id, origin_ip, origin_port, ttl, term);
+        write_all(fd, line);
+        close(fd);
+    }
+}
+
 static void send_result(const p2p_client_context_t *context,
                         unsigned long long query_id,
                         const char *origin_ip,
@@ -100,7 +171,9 @@ static void send_result(const p2p_client_context_t *context,
     close(fd);
 }
 
-static int handle_search(const p2p_client_context_t *context, const char *line) {
+static int handle_search(const p2p_client_context_t *context,
+                         const char *line,
+                         time_t now) {
     unsigned long long query_id;
     unsigned int origin_port;
     unsigned int ttl;
@@ -113,12 +186,21 @@ static int handle_search(const p2p_client_context_t *context, const char *line) 
         return 1;
     }
 
+    if (!remember_query(query_id, now)) {
+        return 1;
+    }
+
     for (size_t i = 0; i < context->file_count; i++) {
         if (strcmp(context->files[i].name, term) == 0) {
             send_result(context, query_id, origin_ip, (uint16_t)origin_port,
                         &context->files[i]);
         }
     }
+    if (ttl > 1) {
+        forward_search(context, query_id, origin_ip, (uint16_t)origin_port,
+                       ttl - 1, term);
+    }
+
     return 1;
 }
 
@@ -156,18 +238,24 @@ static int handle_result(const char *line) {
     return 1;
 }
 
-int distributed_handle_peer_message(const p2p_client_context_t *context,
-                                    const char *line) {
+int distributed_handle_peer_message_at(const p2p_client_context_t *context,
+                                       const char *line,
+                                       time_t now) {
     if (context == NULL || line == NULL) {
         return 0;
     }
     if (strncmp(line, "DSEARCH ", 8) == 0) {
-        return handle_search(context, line);
+        return handle_search(context, line, now);
     }
     if (strncmp(line, "DRESULT ", 8) == 0) {
         return handle_result(line);
     }
     return 0;
+}
+
+int distributed_handle_peer_message(const p2p_client_context_t *context,
+                                    const char *line) {
+    return distributed_handle_peer_message_at(context, line, time(NULL));
 }
 
 int distributed_search_neighbors(const p2p_client_context_t *context,
@@ -187,7 +275,9 @@ int distributed_search_neighbors(const p2p_client_context_t *context,
     *result_count = 0;
 
     pthread_mutex_lock(&query_state.mutex);
-    query_id = next_query_id++;
+    query_id = ((unsigned long long)time(NULL) << 32) ^
+               ((unsigned long long)getpid() << 16) ^
+               context->transfer_port ^ next_query_id++;
     query_state.active_query_id = query_id;
     query_state.results = results;
     query_state.max_results = max_results;
@@ -195,6 +285,7 @@ int distributed_search_neighbors(const p2p_client_context_t *context,
     query_state.active = 1;
     pthread_mutex_unlock(&query_state.mutex);
 
+    remember_query(query_id, time(NULL));
     for (size_t i = 0; i < context->neighbor_count; i++) {
         char line[P2P_MAX_LINE];
         int fd = connect_to_endpoint(context->neighbors[i].ip,

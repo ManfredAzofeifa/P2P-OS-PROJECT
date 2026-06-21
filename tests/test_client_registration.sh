@@ -35,6 +35,10 @@ gcc -Wall -Wextra -I"$ROOT_DIR" -o "$HASH_BIN" "$ROOT_DIR/tests/hash_file.c" "$R
 "$ROOT_DIR/bin/server" "$PORT" > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 
+gcc -Wall -Wextra -pthread -I"$ROOT_DIR" -o "$SHARED_DIR/test_discovery" \
+    "$ROOT_DIR/tests/test_discovery.c" "$ROOT_DIR/distributed/discovery.c"
+"$SHARED_DIR/test_discovery"
+rm -f "$SHARED_DIR/test_discovery"
 for _ in $(seq 1 30); do
     if grep -q "listening" "$SERVER_LOG"; then
         break
