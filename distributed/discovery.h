@@ -5,13 +5,13 @@
 #include <time.h>
 #include "../client/client.h"
 
-int distributed_handle_peer_message(const p2p_client_context_t *context,
-                                    const char *line);
-int distributed_handle_peer_message_at(const p2p_client_context_t *context,
-                                       const char *line,
-                                       time_t now);
-int distributed_search_neighbors(const p2p_client_context_t *context,
-                                 const char *term, p2p_file_metadata_t *results,
-                                 size_t max_results, size_t *result_count);
+int manejar_mensaje_par_distribuido(const contexto_cliente_p2p_t *contexto,
+                                    const char *linea);
+int manejar_mensaje_par_distribuido_en_momento(const contexto_cliente_p2p_t *contexto,
+                                       const char *linea,
+                                       time_t ahora);
+int buscar_en_vecinos(const contexto_cliente_p2p_t *contexto,
+                                 const char *termino, metadato_archivo_p2p_t *resultados,
+                                 size_t max_resultados, size_t *cantidad_resultados);
 
 #endif

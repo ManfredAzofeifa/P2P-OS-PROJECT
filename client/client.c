@@ -1,4 +1,20 @@
-/* client.c - Cliente P2P principal */
+/*
+ * cliente.c - Cliente P2P principal.
+ *
+ * Documentacion de funciones:
+ * leer_puerto: convierte texto a puerto; recibe texto y salida; valida argumentos CLI.
+ * limpiar_salto_linea: limpia mensajes; recibe linea; ayuda al protocolo por sockets.
+ * leer_linea: lee linea de socket; recibe fd, buffer y tamano; recibe respuestas del servidor.
+ * escribir_todo: envia texto completo; recibe fd y texto; envia REGISTER, FIND y LOOKUP.
+ * armar_ruta: une carpeta y nombre; recibe salida, tamano, carpeta y nombre; ubica archivos compartidos.
+ * revisar_carpeta_compartida: escanea archivos y hashes; recibe contexto; registra archivos al iniciar.
+ * conectar_servidor: abre TCP al servidor; recibe host y puerto; comunica cliente-servidor.
+ * leer_vecinos: lee vecinos; recibe fd y contexto; guarda vecinos para busqueda distribuida.
+ * registrar_con_servidor: envia metadatos; recibe contexto; publica archivos en servidor.
+ * buscar_en_servidor: ejecuta FIND; recibe contexto, nombre y salida de pares; resuelve find -s.
+ * buscar_hash_en_servidor: ejecuta LOOKUP; recibe contexto, tamano, hash y salida; apoya request.
+ * main: inicia cliente; recibe servidor, puertos y carpeta; ejecuta registro, transferencia y consola.
+ */
 
 #include "client.h"
 #include "transfer.h"
@@ -19,16 +35,16 @@
 
 #include "../server/hash.h"
 
-static int parse_port(const char *text, uint16_t *out) {
+static int leer_puerto(const char *texto, uint16_t *out) {
     unsigned long value;
     char *end = NULL;
 
-    if (text == NULL || out == NULL) {
+    if (texto == NULL || out == NULL) {
         return -1;
     }
 
-    value = strtoul(text, &end, 10);
-    if (*text == '\0' || *end != '\0' || value == 0 || value > 65535UL) {
+    value = strtoul(texto, &end, 10);
+    if (*texto == '\0' || *end != '\0' || value == 0 || value > 65535UL) {
         return -1;
     }
 
@@ -36,28 +52,28 @@ static int parse_port(const char *text, uint16_t *out) {
     return 0;
 }
 
-static void trim_newline(char *line) {
+static void limpiar_salto_linea(char *linea) {
     size_t len;
 
-    if (line == NULL) {
+    if (linea == NULL) {
         return;
     }
 
-    len = strlen(line);
-    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
-        line[len - 1] = '\0';
+    len = strlen(linea);
+    while (len > 0 && (linea[len - 1] == '\n' || linea[len - 1] == '\r')) {
+        linea[len - 1] = '\0';
         len--;
     }
 }
 
-static int read_line(int fd, char *buffer, size_t size) {
+static int leer_linea(int fd, char *buffer, size_t tamano) {
     size_t used = 0;
 
-    if (buffer == NULL || size == 0) {
+    if (buffer == NULL || tamano == 0) {
         return -1;
     }
 
-    while (used + 1 < size) {
+    while (used + 1 < tamano) {
         char ch;
         ssize_t nread = recv(fd, &ch, 1, 0);
 
@@ -78,16 +94,16 @@ static int read_line(int fd, char *buffer, size_t size) {
     }
 
     buffer[used] = '\0';
-    trim_newline(buffer);
+    limpiar_salto_linea(buffer);
     return used > 0 ? 1 : 0;
 }
 
-static int write_all(int fd, const char *text) {
+static int escribir_todo(int fd, const char *texto) {
     size_t total = 0;
-    size_t len = strlen(text);
+    size_t len = strlen(texto);
 
     while (total < len) {
-        ssize_t nwritten = send(fd, text + total, len - total, 0);
+        ssize_t nwritten = send(fd, texto + total, len - total, 0);
 
         if (nwritten < 0) {
             if (errno == EINTR) {
@@ -101,10 +117,10 @@ static int write_all(int fd, const char *text) {
     return 0;
 }
 
-static int join_path(char *out, size_t out_size, const char *dir, const char *name) {
+static int armar_ruta(char *out, size_t out_size, const char *carpeta, const char *nombre) {
     int written;
 
-    written = snprintf(out, out_size, "%s/%s", dir, name);
+    written = snprintf(out, out_size, "%s/%s", carpeta, nombre);
     if (written < 0 || (size_t)written >= out_size) {
         return -1;
     }
@@ -112,44 +128,44 @@ static int join_path(char *out, size_t out_size, const char *dir, const char *na
     return 0;
 }
 
-static int scan_shared_folder(p2p_client_context_t *context) {
-    DIR *dir;
-    struct dirent *entry;
+static int revisar_carpeta_compartida(contexto_cliente_p2p_t *contexto) {
+    DIR *carpeta;
+    struct dirent *entrada;
 
-    context->file_count = 0;
-    dir = opendir(context->shared_folder);
-    if (dir == NULL) {
-        fprintf(stderr, "warning: cannot open shared folder '%s': %s\n",
-                context->shared_folder, strerror(errno));
+    contexto->cantidad_archivos = 0;
+    carpeta = opendir(contexto->carpeta_compartida);
+    if (carpeta == NULL) {
+        fprintf(stderr, "warning: no se pudo abrir la carpeta compartida '%s': %s\n",
+                contexto->carpeta_compartida, strerror(errno));
         return 0;
     }
 
-    while ((entry = readdir(dir)) != NULL) {
-        char path[P2P_MAX_PATH];
+    while ((entrada = readdir(carpeta)) != NULL) {
+        char ruta[P2P_MAX_PATH];
         struct stat st;
-        p2p_file_metadata_t *file;
+        metadato_archivo_p2p_t *archivo;
 
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+        if (strcmp(entrada->d_name, ".") == 0 || strcmp(entrada->d_name, "..") == 0) {
             continue;
         }
 
-        if (context->file_count >= CLIENT_MAX_LOCAL_FILES) {
-            fprintf(stderr, "warning: local file limit reached; skipping remaining files\n");
+        if (contexto->cantidad_archivos >= CLIENT_MAX_LOCAL_FILES) {
+            fprintf(stderr, "warning: local archivo limit reached; skipping restante archivos\n");
             break;
         }
 
-        if (strchr(entry->d_name, '\n') != NULL || strlen(entry->d_name) >= P2P_MAX_NAME) {
-            fprintf(stderr, "warning: skipping unsupported file name '%s'\n", entry->d_name);
+        if (strchr(entrada->d_name, '\n') != NULL || strlen(entrada->d_name) >= P2P_MAX_NAME) {
+            fprintf(stderr, "warning: skipping unsupported archivo nombre '%s'\n", entrada->d_name);
             continue;
         }
 
-        if (join_path(path, sizeof(path), context->shared_folder, entry->d_name) != 0) {
-            fprintf(stderr, "warning: skipping path that is too long: %s\n", entry->d_name);
+        if (armar_ruta(ruta, sizeof(ruta), contexto->carpeta_compartida, entrada->d_name) != 0) {
+            fprintf(stderr, "warning: skipping ruta that is too long: %s\n", entrada->d_name);
             continue;
         }
 
-        if (stat(path, &st) != 0) {
-            fprintf(stderr, "warning: cannot stat '%s': %s\n", path, strerror(errno));
+        if (stat(ruta, &st) != 0) {
+            fprintf(stderr, "warning: cannot stat '%s': %s\n", ruta, strerror(errno));
             continue;
         }
 
@@ -157,44 +173,44 @@ static int scan_shared_folder(p2p_client_context_t *context) {
             continue;
         }
 
-        file = &context->files[context->file_count];
-        memset(file, 0, sizeof(*file));
-        snprintf(file->name, sizeof(file->name), "%s", entry->d_name);
-        file->size = (uint64_t)st.st_size;
+        archivo = &contexto->archivos[contexto->cantidad_archivos];
+        memset(archivo, 0, sizeof(*archivo));
+        snprintf(archivo->nombre, sizeof(archivo->nombre), "%s", entrada->d_name);
+        archivo->tamano = (uint64_t)st.st_size;
 
-        if (p2p_hash_file(path, file->hash) != 0) {
-            fprintf(stderr, "warning: cannot hash '%s': %s\n", path, strerror(errno));
+        if (calcular_hash_archivo(ruta, archivo->hash) != 0) {
+            fprintf(stderr, "warning: cannot hash '%s': %s\n", ruta, strerror(errno));
             continue;
         }
 
-        context->file_count++;
+        contexto->cantidad_archivos++;
     }
 
-    if (closedir(dir) != 0) {
+    if (closedir(carpeta) != 0) {
         fprintf(stderr, "warning: cannot close shared folder '%s': %s\n",
-                context->shared_folder, strerror(errno));
+                contexto->carpeta_compartida, strerror(errno));
     }
 
     return 0;
 }
 
-static int connect_to_server(const char *host, uint16_t port) {
+static int conectar_servidor(const char *host, uint16_t puerto) {
     struct addrinfo hints;
-    struct addrinfo *results = NULL;
+    struct addrinfo *resultados = NULL;
     struct addrinfo *it;
     char port_text[16];
     int fd = -1;
 
-    snprintf(port_text, sizeof(port_text), "%u", port);
+    snprintf(port_text, sizeof(port_text), "%u", puerto);
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
 
-    if (getaddrinfo(host, port_text, &hints, &results) != 0) {
+    if (getaddrinfo(host, port_text, &hints, &resultados) != 0) {
         return -1;
     }
 
-    for (it = results; it != NULL; it = it->ai_next) {
+    for (it = resultados; it != NULL; it = it->ai_next) {
         fd = socket(it->ai_family, it->ai_socktype, it->ai_protocol);
         if (fd < 0) {
             continue;
@@ -206,55 +222,55 @@ static int connect_to_server(const char *host, uint16_t port) {
         fd = -1;
     }
 
-    freeaddrinfo(results);
+    freeaddrinfo(resultados);
     return fd;
 }
 
-static int parse_neighbors(int fd, p2p_client_context_t *context) {
-    char line[P2P_MAX_LINE];
-    unsigned int expected;
+static int leer_vecinos(int fd, contexto_cliente_p2p_t *contexto) {
+    char linea[P2P_MAX_LINE];
+    unsigned int esperados;
 
-    if (read_line(fd, line, sizeof(line)) <= 0) {
-        fprintf(stderr, "server closed before NEIGHBORS response\n");
+    if (leer_linea(fd, linea, sizeof(linea)) <= 0) {
+        fprintf(stderr, "servidor closed before NEIGHBORS respuesta\n");
         return -1;
     }
 
-    if (sscanf(line, "NEIGHBORS %u", &expected) != 1) {
-        fprintf(stderr, "unexpected server response: %s\n", line);
+    if (sscanf(linea, "NEIGHBORS %u", &esperados) != 1) {
+        fprintf(stderr, "unexpected servidor respuesta: %s\n", linea);
         return -1;
     }
 
-    context->neighbor_count = 0;
-    while (read_line(fd, line, sizeof(line)) > 0) {
+    contexto->cantidad_vecinos = 0;
+    while (leer_linea(fd, linea, sizeof(linea)) > 0) {
         char ip[46];
-        unsigned int port;
+        unsigned int puerto;
 
-        if (strcmp(line, "END") == 0) {
+        if (strcmp(linea, "END") == 0) {
             return 0;
         }
 
-        if (sscanf(line, "NEIGHBOR %45s %u", ip, &port) == 2 &&
-            port > 0 && port <= 65535U &&
-            context->neighbor_count < P2P_DEFAULT_NEIGHBORS) {
-            p2p_endpoint_t *neighbor = &context->neighbors[context->neighbor_count++];
+        if (sscanf(linea, "NEIGHBOR %45s %u", ip, &puerto) == 2 &&
+            puerto > 0 && puerto <= 65535U &&
+            contexto->cantidad_vecinos < P2P_DEFAULT_NEIGHBORS) {
+            punto_red_p2p_t *neighbor = &contexto->vecinos[contexto->cantidad_vecinos++];
             snprintf(neighbor->ip, sizeof(neighbor->ip), "%s", ip);
-            neighbor->port = (uint16_t)port;
+            neighbor->puerto = (uint16_t)puerto;
         }
     }
 
     return -1;
 }
 
-static int register_with_server(p2p_client_context_t *context) {
+static int registrar_con_servidor(contexto_cliente_p2p_t *contexto) {
     int fd;
-    char line[P2P_MAX_LINE];
+    char linea[P2P_MAX_LINE];
     struct sockaddr_storage local_addr;
     socklen_t local_addr_len = sizeof(local_addr);
 
-    fd = connect_to_server(context->server_ip, context->server_port);
+    fd = conectar_servidor(contexto->ip_servidor, contexto->puerto_servidor);
     if (fd < 0) {
-        fprintf(stderr, "cannot connect to server %s:%u\n",
-                context->server_ip, context->server_port);
+        fprintf(stderr, "cannot connect to servidor %s:%u\n",
+                contexto->ip_servidor, contexto->puerto_servidor);
         return -1;
     }
     if (getsockname(fd, (struct sockaddr *)&local_addr, &local_addr_len) == 0) {
@@ -266,114 +282,114 @@ static int register_with_server(p2p_client_context_t *context) {
         }
         if (address != NULL) {
             inet_ntop(local_addr.ss_family, address,
-                      context->local_ip, sizeof(context->local_ip));
+                      contexto->ip_local, sizeof(contexto->ip_local));
         }
     }
 
 
-    snprintf(line, sizeof(line), "REGISTER %u %zu\n",
-             context->transfer_port, context->file_count);
-    if (write_all(fd, line) != 0) {
+    snprintf(linea, sizeof(linea), "REGISTER %u %zu\n",
+             contexto->puerto_transferencia, contexto->cantidad_archivos);
+    if (escribir_todo(fd, linea) != 0) {
         close(fd);
         return -1;
     }
 
-    for (size_t i = 0; i < context->file_count; i++) {
-        snprintf(line, sizeof(line), "FILE %llu %s %s\n",
-                 (unsigned long long)context->files[i].size,
-                 context->files[i].hash,
-                 context->files[i].name);
-        if (write_all(fd, line) != 0) {
+    for (size_t i = 0; i < contexto->cantidad_archivos; i++) {
+        snprintf(linea, sizeof(linea), "FILE %llu %s %s\n",
+                 (unsigned long long)contexto->archivos[i].tamano,
+                 contexto->archivos[i].hash,
+                 contexto->archivos[i].nombre);
+        if (escribir_todo(fd, linea) != 0) {
             close(fd);
             return -1;
         }
     }
 
-    if (write_all(fd, "END\n") != 0) {
+    if (escribir_todo(fd, "END\n") != 0) {
         close(fd);
         return -1;
     }
 
-    if (read_line(fd, line, sizeof(line)) <= 0) {
-        fprintf(stderr, "server closed before registration response\n");
+    if (leer_linea(fd, linea, sizeof(linea)) <= 0) {
+        fprintf(stderr, "servidor closed before registration respuesta\n");
         close(fd);
         return -1;
     }
 
-    if (strncmp(line, "OK ", 3) != 0) {
-        fprintf(stderr, "registration failed: %s\n", line);
+    if (strncmp(linea, "OK ", 3) != 0) {
+        fprintf(stderr, "registro fallo: %s\n", linea);
         close(fd);
         return -1;
     }
 
-    if (parse_neighbors(fd, context) != 0) {
+    if (leer_vecinos(fd, contexto) != 0) {
         close(fd);
         return -1;
     }
 
     close(fd);
-    printf("registered %zu files with %s:%u\n",
-           context->file_count, context->server_ip, context->server_port);
-    printf("received %zu neighbors\n", context->neighbor_count);
+    printf("registrados %zu archivos con %s:%u\n",
+           contexto->cantidad_archivos, contexto->ip_servidor, contexto->puerto_servidor);
+    printf("recibidos %zu vecinos\n", contexto->cantidad_vecinos);
     return 0;
 }
 
-int client_find_on_server(const p2p_client_context_t *context,
-                          const char *name,
-                          p2p_endpoint_t *peers,
-                          size_t max_peers,
-                          size_t *peer_count) {
+int buscar_en_servidor(const contexto_cliente_p2p_t *contexto,
+                          const char *nombre,
+                          punto_red_p2p_t *pares,
+                          size_t max_pares,
+                          size_t *cantidad_pares) {
     int fd;
-    char line[P2P_MAX_LINE];
-    unsigned int expected;
+    char linea[P2P_MAX_LINE];
+    unsigned int esperados;
 
-    if (context == NULL || name == NULL || peers == NULL || peer_count == NULL ||
-        name[0] == '\0' || strchr(name, '\n') != NULL) {
+    if (contexto == NULL || nombre == NULL || pares == NULL || cantidad_pares == NULL ||
+        nombre[0] == '\0' || strchr(nombre, '\n') != NULL) {
         return -1;
     }
 
-    *peer_count = 0;
-    fd = connect_to_server(context->server_ip, context->server_port);
+    *cantidad_pares = 0;
+    fd = conectar_servidor(contexto->ip_servidor, contexto->puerto_servidor);
     if (fd < 0) {
-        fprintf(stderr, "cannot connect to server %s:%u\n",
-                context->server_ip, context->server_port);
+        fprintf(stderr, "cannot connect to servidor %s:%u\n",
+                contexto->ip_servidor, contexto->puerto_servidor);
         return -1;
     }
 
-    snprintf(line, sizeof(line), "FIND %s\n", name);
-    if (write_all(fd, line) != 0) {
+    snprintf(linea, sizeof(linea), "FIND %s\n", nombre);
+    if (escribir_todo(fd, linea) != 0) {
         close(fd);
         return -1;
     }
 
-    if (read_line(fd, line, sizeof(line)) <= 0) {
-        fprintf(stderr, "server closed before FIND response\n");
+    if (leer_linea(fd, linea, sizeof(linea)) <= 0) {
+        fprintf(stderr, "servidor closed before FIND respuesta\n");
         close(fd);
         return -1;
     }
 
-    if (sscanf(line, "PEERS %u", &expected) != 1) {
-        fprintf(stderr, "unexpected FIND response: %s\n", line);
+    if (sscanf(linea, "PEERS %u", &esperados) != 1) {
+        fprintf(stderr, "unexpected FIND respuesta: %s\n", linea);
         close(fd);
         return -1;
     }
 
-    while (read_line(fd, line, sizeof(line)) > 0) {
+    while (leer_linea(fd, linea, sizeof(linea)) > 0) {
         char ip[46];
-        unsigned int port;
+        unsigned int puerto;
 
-        if (strcmp(line, "END") == 0) {
+        if (strcmp(linea, "END") == 0) {
             close(fd);
             return 0;
         }
 
-        if (sscanf(line, "PEER %45s %u", ip, &port) == 2 &&
-            port > 0 && port <= 65535U &&
-            *peer_count < max_peers) {
-            p2p_endpoint_t *peer = &peers[*peer_count];
+        if (sscanf(linea, "PEER %45s %u", ip, &puerto) == 2 &&
+            puerto > 0 && puerto <= 65535U &&
+            *cantidad_pares < max_pares) {
+            punto_red_p2p_t *peer = &pares[*cantidad_pares];
             snprintf(peer->ip, sizeof(peer->ip), "%s", ip);
-            peer->port = (uint16_t)port;
-            (*peer_count)++;
+            peer->puerto = (uint16_t)puerto;
+            (*cantidad_pares)++;
         }
     }
 
@@ -381,63 +397,63 @@ int client_find_on_server(const p2p_client_context_t *context,
     return -1;
 }
 
-int client_lookup_on_server(const p2p_client_context_t *context,
-                            uint64_t size,
+int buscar_hash_en_servidor(const contexto_cliente_p2p_t *contexto,
+                            uint64_t tamano,
                             const char *hash,
-                            p2p_endpoint_t *peers,
-                            size_t max_peers,
-                            size_t *peer_count) {
+                            punto_red_p2p_t *pares,
+                            size_t max_pares,
+                            size_t *cantidad_pares) {
     int fd;
-    char line[P2P_MAX_LINE];
-    unsigned int expected;
+    char linea[P2P_MAX_LINE];
+    unsigned int esperados;
 
-    if (context == NULL || hash == NULL || peers == NULL || peer_count == NULL ||
+    if (contexto == NULL || hash == NULL || pares == NULL || cantidad_pares == NULL ||
         strlen(hash) != P2P_HASH_HEX_LEN || strchr(hash, '\n') != NULL) {
         return -1;
     }
 
-    *peer_count = 0;
-    fd = connect_to_server(context->server_ip, context->server_port);
+    *cantidad_pares = 0;
+    fd = conectar_servidor(contexto->ip_servidor, contexto->puerto_servidor);
     if (fd < 0) {
-        fprintf(stderr, "cannot connect to server %s:%u\n",
-                context->server_ip, context->server_port);
+        fprintf(stderr, "cannot connect to servidor %s:%u\n",
+                contexto->ip_servidor, contexto->puerto_servidor);
         return -1;
     }
 
-    snprintf(line, sizeof(line), "LOOKUP %llu %s\n", (unsigned long long)size, hash);
-    if (write_all(fd, line) != 0) {
+    snprintf(linea, sizeof(linea), "LOOKUP %llu %s\n", (unsigned long long)tamano, hash);
+    if (escribir_todo(fd, linea) != 0) {
         close(fd);
         return -1;
     }
 
-    if (read_line(fd, line, sizeof(line)) <= 0) {
-        fprintf(stderr, "server closed before LOOKUP response\n");
+    if (leer_linea(fd, linea, sizeof(linea)) <= 0) {
+        fprintf(stderr, "servidor closed before LOOKUP respuesta\n");
         close(fd);
         return -1;
     }
 
-    if (sscanf(line, "PEERS %u", &expected) != 1) {
-        fprintf(stderr, "unexpected LOOKUP response: %s\n", line);
+    if (sscanf(linea, "PEERS %u", &esperados) != 1) {
+        fprintf(stderr, "unexpected LOOKUP respuesta: %s\n", linea);
         close(fd);
         return -1;
     }
 
-    while (read_line(fd, line, sizeof(line)) > 0) {
+    while (leer_linea(fd, linea, sizeof(linea)) > 0) {
         char ip[46];
-        unsigned int port;
+        unsigned int puerto;
 
-        if (strcmp(line, "END") == 0) {
+        if (strcmp(linea, "END") == 0) {
             close(fd);
             return 0;
         }
 
-        if (sscanf(line, "PEER %45s %u", ip, &port) == 2 &&
-            port > 0 && port <= 65535U &&
-            *peer_count < max_peers) {
-            p2p_endpoint_t *peer = &peers[*peer_count];
+        if (sscanf(linea, "PEER %45s %u", ip, &puerto) == 2 &&
+            puerto > 0 && puerto <= 65535U &&
+            *cantidad_pares < max_pares) {
+            punto_red_p2p_t *peer = &pares[*cantidad_pares];
             snprintf(peer->ip, sizeof(peer->ip), "%s", ip);
-            peer->port = (uint16_t)port;
-            (*peer_count)++;
+            peer->puerto = (uint16_t)puerto;
+            (*cantidad_pares)++;
         }
     }
 
@@ -446,41 +462,41 @@ int client_lookup_on_server(const p2p_client_context_t *context,
 }
 
 int main(int argc, char **argv) {
-    p2p_client_context_t context;
+    contexto_cliente_p2p_t contexto;
 
     if (argc != 5) {
-        fprintf(stderr, "usage: %s <server_ip> <server_port> <transfer_port> <shared_folder>\n",
+        fprintf(stderr, "uso: %s <ip_servidor> <puerto_servidor> <puerto_transferencia> <carpeta_compartida>\n",
                 argv[0]);
         return 2;
     }
 
-    memset(&context, 0, sizeof(context));
-    snprintf(context.server_ip, sizeof(context.server_ip), "%s", argv[1]);
-    snprintf(context.shared_folder, sizeof(context.shared_folder), "%s", argv[4]);
+    memset(&contexto, 0, sizeof(contexto));
+    snprintf(contexto.ip_servidor, sizeof(contexto.ip_servidor), "%s", argv[1]);
+    snprintf(contexto.carpeta_compartida, sizeof(contexto.carpeta_compartida), "%s", argv[4]);
 
-    if (parse_port(argv[2], &context.server_port) != 0) {
-        fprintf(stderr, "invalid server port: %s\n", argv[2]);
+    if (leer_puerto(argv[2], &contexto.puerto_servidor) != 0) {
+        fprintf(stderr, "puerto del servidor invalido: %s\n", argv[2]);
         return 2;
     }
 
-    if (parse_port(argv[3], &context.transfer_port) != 0) {
-        fprintf(stderr, "invalid transfer port: %s\n", argv[3]);
+    if (leer_puerto(argv[3], &contexto.puerto_transferencia) != 0) {
+        fprintf(stderr, "puerto de transferencia invalido: %s\n", argv[3]);
         return 2;
     }
 
-    scan_shared_folder(&context);
+    revisar_carpeta_compartida(&contexto);
 
-    if (register_with_server(&context) != 0) {
+    if (registrar_con_servidor(&contexto) != 0) {
         return 1;
     }
 
     signal(SIGPIPE, SIG_IGN);
 
-    if (transfer_server_start(&context) != 0) {
-        fprintf(stderr, "cannot start transfer server on port %u\n", context.transfer_port);
+    if (iniciar_servidor_transferencia(&contexto) != 0) {
+        fprintf(stderr, "cannot start transfer servidor on puerto %u\n", contexto.puerto_transferencia);
         return 1;
     }
 
-    client_run_console(&context);
+    correr_consola_cliente(&contexto);
     return 0;
 }

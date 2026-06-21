@@ -10,7 +10,7 @@
 
 #include "../distributed/discovery.h"
 
-static int create_capture_listener(uint16_t *port) {
+static int create_capture_listener(uint16_t *puerto) {
     struct sockaddr_in address;
     socklen_t address_len = sizeof(address);
     int fd;
@@ -37,11 +37,11 @@ static int create_capture_listener(uint16_t *port) {
         close(fd);
         return -1;
     }
-    *port = ntohs(address.sin_port);
+    *puerto = ntohs(address.sin_port);
     return fd;
 }
 
-static int read_forwarded_line(int listen_fd, char *line, size_t line_size) {
+static int read_forwarded_line(int listen_fd, char *linea, size_t line_size) {
     int fd = accept(listen_fd, NULL, NULL);
     size_t used = 0;
 
@@ -49,16 +49,16 @@ static int read_forwarded_line(int listen_fd, char *line, size_t line_size) {
         return -1;
     }
     while (used + 1 < line_size) {
-        ssize_t received = recv(fd, line + used, 1, 0);
+        ssize_t recibido = recv(fd, linea + used, 1, 0);
 
-        if (received <= 0) {
+        if (recibido <= 0) {
             break;
         }
-        if (line[used++] == '\n') {
+        if (linea[used++] == '\n') {
             break;
         }
     }
-    line[used] = '\0';
+    linea[used] = '\0';
     close(fd);
     return used > 0 ? 0 : -1;
 }
@@ -75,62 +75,62 @@ static int expect_no_forward(int listen_fd) {
 
 static void require(int condition, const char *message) {
     if (!condition) {
-        fprintf(stderr, "discovery test failed: %s\n", message);
+        fprintf(stderr, "prueba de busqueda distribuida fallo: %s\n", message);
         exit(1);
     }
 }
 
 int main(void) {
-    p2p_client_context_t context;
+    contexto_cliente_p2p_t contexto;
     uint16_t capture_port;
-    char line[P2P_MAX_LINE];
+    char linea[P2P_MAX_LINE];
     int listen_fd;
     time_t first_seen = 1000;
 
-    memset(&context, 0, sizeof(context));
+    memset(&contexto, 0, sizeof(contexto));
     listen_fd = create_capture_listener(&capture_port);
     require(listen_fd >= 0, "cannot create capture listener");
-    snprintf(context.neighbors[0].ip, sizeof(context.neighbors[0].ip),
+    snprintf(contexto.vecinos[0].ip, sizeof(contexto.vecinos[0].ip),
              "127.0.0.1");
-    context.neighbors[0].port = capture_port;
-    context.neighbor_count = 1;
+    contexto.vecinos[0].puerto = capture_port;
+    contexto.cantidad_vecinos = 1;
 
-    require(distributed_handle_peer_message_at(
-                &context,
+    require(manejar_mensaje_par_distribuido_en_momento(
+                &contexto,
                 "DSEARCH 900 127.0.0.1 49999 3 needle",
                 first_seen) == 1,
             "TTL search was not handled");
-    require(read_forwarded_line(listen_fd, line, sizeof(line)) == 0,
+    require(read_forwarded_line(listen_fd, linea, sizeof(linea)) == 0,
             "TTL search was not forwarded");
-    require(strcmp(line,
+    require(strcmp(linea,
                    "DSEARCH 900 127.0.0.1 49999 2 needle\n") == 0,
             "forwarded TTL was not decremented");
 
-    require(distributed_handle_peer_message_at(
-                &context,
+    require(manejar_mensaje_par_distribuido_en_momento(
+                &contexto,
                 "DSEARCH 900 127.0.0.1 49999 3 needle",
                 first_seen + 1) == 1,
-            "duplicate search was not handled");
+            "repetido search was not handled");
     require(expect_no_forward(listen_fd) == 0,
-            "duplicate query was forwarded");
+            "repetido query was forwarded");
 
-    require(distributed_handle_peer_message_at(
-                &context,
+    require(manejar_mensaje_par_distribuido_en_momento(
+                &contexto,
                 "DSEARCH 901 127.0.0.1 49999 1 needle",
                 first_seen + 2) == 1,
             "TTL-expired search was not handled");
     require(expect_no_forward(listen_fd) == 0,
             "TTL-expired search was forwarded");
 
-    require(distributed_handle_peer_message_at(
-                &context,
+    require(manejar_mensaje_par_distribuido_en_momento(
+                &contexto,
                 "DSEARCH 900 127.0.0.1 49999 3 needle",
                 first_seen + P2P_SEEN_QUERY_TTL_SECONDS) == 1,
             "expired seen query was not handled");
-    require(read_forwarded_line(listen_fd, line, sizeof(line)) == 0,
+    require(read_forwarded_line(listen_fd, linea, sizeof(linea)) == 0,
             "expired seen query was not accepted again");
 
     close(listen_fd);
-    printf("distributed discovery ok\n");
+    printf("busqueda distribuida ok\n");
     return 0;
 }

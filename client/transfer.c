@@ -1,4 +1,27 @@
-/* transfer.c - Envio y recepcion de archivos por segmentos */
+/*
+ * transfer.c - Envio y recepcion de archivos por segmentos.
+ *
+ * Documentacion de funciones:
+ * limpiar_salto_linea: limpia mensajes; recibe linea; ayuda a leer GET/DATA/ERROR.
+ * leer_linea: lee linea de socket; recibe fd, buffer y tamano; procesa protocolo de transferencia.
+ * escribir_todo: envia bytes completos; recibe fd, datos y largo; manda DATA y rangos.
+ * escribir_texto: envia texto; recibe fd y texto; manda encabezados y errores.
+ * armar_ruta: arma ruta local; recibe salida, tamano, carpeta y nombre; ubica archivo compartido.
+ * buscar_archivo_local: busca archivo local por tamano/hash; recibe contexto, tamano y hash; sirve request por contenido.
+ * enviar_rango_archivo: manda un rango; recibe fd, contexto, archivo, inicio y largo; resuelve GET por rangos.
+ * hilo_pedido_transferencia: atiende un GET; recibe pedido aceptado; crea un hilo por solicitud entrante.
+ * hilo_aceptar_transferencias: acepta conexiones; recibe servidor de transferencia; mantiene listener del cliente.
+ * crear_socket_escucha: abre socket TCP; recibe puerto; levanta puerto de transferencia.
+ * leer_exacto: lee cantidad exacta de bytes; recibe fd, buffer y largo; descarga DATA sin cortar.
+ * conectar_par: conecta con otro cliente; recibe IP/puerto; permite descargar desde pares.
+ * archivo_calza_con_pedido: valida archivo existente; recibe ruta, tamano y hash; evita sobrescribir descargas correctas.
+ * armar_ruta_parcial: arma ruta .part; recibe salida y ruta final; evita dejar archivos incompletos como finales.
+ * crear_archivo_vacio: reserva salida; recibe ruta y tamano; prepara reensamblado segmentado.
+ * hilo_descarga_rango: descarga un rango; recibe tarea de rango; permite descargas segmentadas concurrentes.
+ * iniciar_servidor_transferencia: inicia listener; recibe contexto; permite que otros clientes pidan rangos.
+ * descargar_de_par: descarga desde un par; recibe contexto, par, tamano, hash y salida; resuelve request con un candidato.
+ * descargar_de_pares: descarga con varios pares; recibe contexto, pares, tamano, hash y salidas; resuelve descarga segmentada.
+ */
 
 #include "transfer.h"
 #include "../distributed/discovery.h"
@@ -25,36 +48,36 @@
 
 typedef struct {
     int fd;
-    const p2p_client_context_t *context;
-} transfer_request_t;
+    const contexto_cliente_p2p_t *contexto;
+} pedido_transferencia_t;
 
 typedef struct {
     int listen_fd;
-    const p2p_client_context_t *context;
-} transfer_server_t;
+    const contexto_cliente_p2p_t *contexto;
+} servidor_transferencia_t;
 
-static void trim_newline(char *line) {
+static void limpiar_salto_linea(char *linea) {
     size_t len;
 
-    if (line == NULL) {
+    if (linea == NULL) {
         return;
     }
 
-    len = strlen(line);
-    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
-        line[len - 1] = '\0';
+    len = strlen(linea);
+    while (len > 0 && (linea[len - 1] == '\n' || linea[len - 1] == '\r')) {
+        linea[len - 1] = '\0';
         len--;
     }
 }
 
-static int read_line(int fd, char *buffer, size_t size) {
+static int leer_linea(int fd, char *buffer, size_t tamano) {
     size_t used = 0;
 
-    if (buffer == NULL || size == 0) {
+    if (buffer == NULL || tamano == 0) {
         return -1;
     }
 
-    while (used + 1 < size) {
+    while (used + 1 < tamano) {
         char ch;
         ssize_t nread = recv(fd, &ch, 1, 0);
 
@@ -75,12 +98,12 @@ static int read_line(int fd, char *buffer, size_t size) {
     }
 
     buffer[used] = '\0';
-    trim_newline(buffer);
+    limpiar_salto_linea(buffer);
     return used > 0 ? 1 : 0;
 }
 
-static int write_all(int fd, const void *data, size_t len) {
-    const char *bytes = data;
+static int escribir_todo(int fd, const void *datos, size_t len) {
+    const char *bytes = datos;
     size_t total = 0;
 
     while (total < len) {
@@ -98,12 +121,12 @@ static int write_all(int fd, const void *data, size_t len) {
     return 0;
 }
 
-static int write_text(int fd, const char *text) {
-    return write_all(fd, text, strlen(text));
+static int escribir_texto(int fd, const char *texto) {
+    return escribir_todo(fd, texto, strlen(texto));
 }
 
-static int join_path(char *out, size_t out_size, const char *dir, const char *name) {
-    int written = snprintf(out, out_size, "%s/%s", dir, name);
+static int armar_ruta(char *out, size_t out_size, const char *carpeta, const char *nombre) {
+    int written = snprintf(out, out_size, "%s/%s", carpeta, nombre);
 
     if (written < 0 || (size_t)written >= out_size) {
         return -1;
@@ -112,61 +135,61 @@ static int join_path(char *out, size_t out_size, const char *dir, const char *na
     return 0;
 }
 
-static const p2p_file_metadata_t *find_local_file(const p2p_client_context_t *context,
-                                                  uint64_t size,
+static const metadato_archivo_p2p_t *buscar_archivo_local(const contexto_cliente_p2p_t *contexto,
+                                                  uint64_t tamano,
                                                   const char *hash) {
-    for (size_t i = 0; i < context->file_count; i++) {
-        const p2p_file_metadata_t *file = &context->files[i];
-        if (file->size == size && strcmp(file->hash, hash) == 0) {
-            return file;
+    for (size_t i = 0; i < contexto->cantidad_archivos; i++) {
+        const metadato_archivo_p2p_t *archivo = &contexto->archivos[i];
+        if (archivo->tamano == tamano && strcmp(archivo->hash, hash) == 0) {
+            return archivo;
         }
     }
 
     return NULL;
 }
 
-static int send_file_range(int fd,
-                           const p2p_client_context_t *context,
-                           const p2p_file_metadata_t *file,
-                           uint64_t offset,
-                           uint64_t length) {
-    char path[P2P_MAX_PATH];
+static int enviar_rango_archivo(int fd,
+                           const contexto_cliente_p2p_t *contexto,
+                           const metadato_archivo_p2p_t *archivo,
+                           uint64_t inicio,
+                           uint64_t largo) {
+    char ruta[P2P_MAX_PATH];
     char header[P2P_MAX_LINE];
     unsigned char buffer[TRANSFER_BUFFER_SIZE];
     FILE *input;
     struct stat st;
-    uint64_t remaining = length;
+    uint64_t restante = largo;
 
-    if (offset > file->size || length > file->size - offset) {
-        return write_text(fd, "ERROR invalid range\n");
+    if (inicio > archivo->tamano || largo > archivo->tamano - inicio) {
+        return escribir_texto(fd, "ERROR rango invalido\n");
     }
 
-    if (join_path(path, sizeof(path), context->shared_folder, file->name) != 0) {
-        return write_text(fd, "ERROR path too long\n");
+    if (armar_ruta(ruta, sizeof(ruta), contexto->carpeta_compartida, archivo->nombre) != 0) {
+        return escribir_texto(fd, "ERROR ruta demasiado larga\n");
     }
 
-    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || (uint64_t)st.st_size != file->size) {
-        return write_text(fd, "ERROR file unavailable\n");
+    if (stat(ruta, &st) != 0 || !S_ISREG(st.st_mode) || (uint64_t)st.st_size != archivo->tamano) {
+        return escribir_texto(fd, "ERROR archivo no disponible\n");
     }
 
-    input = fopen(path, "rb");
+    input = fopen(ruta, "rb");
     if (input == NULL) {
-        return write_text(fd, "ERROR file unavailable\n");
+        return escribir_texto(fd, "ERROR archivo no disponible\n");
     }
 
-    if (fseeko(input, (off_t)offset, SEEK_SET) != 0) {
+    if (fseeko(input, (off_t)inicio, SEEK_SET) != 0) {
         fclose(input);
-        return write_text(fd, "ERROR seek failed\n");
+        return escribir_texto(fd, "ERROR fallo al moverse en archivo\n");
     }
 
-    snprintf(header, sizeof(header), "DATA %llu\n", (unsigned long long)length);
-    if (write_text(fd, header) != 0) {
+    snprintf(header, sizeof(header), "DATA %llu\n", (unsigned long long)largo);
+    if (escribir_texto(fd, header) != 0) {
         fclose(input);
         return -1;
     }
 
-    while (remaining > 0) {
-        size_t chunk = remaining > sizeof(buffer) ? sizeof(buffer) : (size_t)remaining;
+    while (restante > 0) {
+        size_t chunk = restante > sizeof(buffer) ? sizeof(buffer) : (size_t)restante;
         size_t nread = fread(buffer, 1, chunk, input);
 
         if (nread == 0) {
@@ -174,68 +197,68 @@ static int send_file_range(int fd,
             return -1;
         }
 
-        if (write_all(fd, buffer, nread) != 0) {
+        if (escribir_todo(fd, buffer, nread) != 0) {
             fclose(input);
             return -1;
         }
 
-        remaining -= nread;
+        restante -= nread;
     }
 
     fclose(input);
     return 0;
 }
 
-static void *transfer_request_thread(void *arg) {
-    transfer_request_t *request = arg;
-    char line[P2P_MAX_LINE];
-    unsigned long long size;
-    unsigned long long offset;
-    unsigned long long length;
+static void *hilo_pedido_transferencia(void *arg) {
+    pedido_transferencia_t *pedido = arg;
+    char linea[P2P_MAX_LINE];
+    unsigned long long tamano;
+    unsigned long long inicio;
+    unsigned long long largo;
     char hash[P2P_HASH_STR_LEN];
-    const p2p_file_metadata_t *file;
+    const metadato_archivo_p2p_t *archivo;
 
-    if (read_line(request->fd, line, sizeof(line)) <= 0) {
-        close(request->fd);
-        free(request);
+    if (leer_linea(pedido->fd, linea, sizeof(linea)) <= 0) {
+        close(pedido->fd);
+        free(pedido);
         return NULL;
     }
-    if (distributed_handle_peer_message(request->context, line)) {
-        close(request->fd);
-        free(request);
+    if (manejar_mensaje_par_distribuido(pedido->contexto, linea)) {
+        close(pedido->fd);
+        free(pedido);
         return NULL;
     }
 
 
-    if (sscanf(line, "GET %llu %32s %llu %llu", &size, hash, &offset, &length) != 4 ||
+    if (sscanf(linea, "GET %llu %32s %llu %llu", &tamano, hash, &inicio, &largo) != 4 ||
         strlen(hash) != P2P_HASH_HEX_LEN) {
-        write_text(request->fd, "ERROR invalid GET\n");
-        close(request->fd);
-        free(request);
+        escribir_texto(pedido->fd, "ERROR GET invalido\n");
+        close(pedido->fd);
+        free(pedido);
         return NULL;
     }
 
-    file = find_local_file(request->context, (uint64_t)size, hash);
-    if (file == NULL) {
-        write_text(request->fd, "ERROR file not found\n");
-        close(request->fd);
-        free(request);
+    archivo = buscar_archivo_local(pedido->contexto, (uint64_t)tamano, hash);
+    if (archivo == NULL) {
+        escribir_texto(pedido->fd, "ERROR archivo no encontrado\n");
+        close(pedido->fd);
+        free(pedido);
         return NULL;
     }
 
-    send_file_range(request->fd, request->context, file, (uint64_t)offset, (uint64_t)length);
-    close(request->fd);
-    free(request);
+    enviar_rango_archivo(pedido->fd, pedido->contexto, archivo, (uint64_t)inicio, (uint64_t)largo);
+    close(pedido->fd);
+    free(pedido);
     return NULL;
 }
 
-static void *transfer_accept_thread(void *arg) {
-    transfer_server_t *server = arg;
+static void *hilo_aceptar_transferencias(void *arg) {
+    servidor_transferencia_t *servidor = arg;
 
     while (1) {
-        transfer_request_t *request;
-        pthread_t thread;
-        int fd = accept(server->listen_fd, NULL, NULL);
+        pedido_transferencia_t *pedido;
+        pthread_t hilo;
+        int fd = accept(servidor->listen_fd, NULL, NULL);
 
         if (fd < 0) {
             if (errno == EINTR) {
@@ -244,29 +267,29 @@ static void *transfer_accept_thread(void *arg) {
             break;
         }
 
-        request = calloc(1, sizeof(*request));
-        if (request == NULL) {
+        pedido = calloc(1, sizeof(*pedido));
+        if (pedido == NULL) {
             close(fd);
             continue;
         }
 
-        request->fd = fd;
-        request->context = server->context;
+        pedido->fd = fd;
+        pedido->contexto = servidor->contexto;
 
-        if (pthread_create(&thread, NULL, transfer_request_thread, request) != 0) {
+        if (pthread_create(&hilo, NULL, hilo_pedido_transferencia, pedido) != 0) {
             close(fd);
-            free(request);
+            free(pedido);
             continue;
         }
-        pthread_detach(thread);
+        pthread_detach(hilo);
     }
 
-    close(server->listen_fd);
-    free(server);
+    close(servidor->listen_fd);
+    free(servidor);
     return NULL;
 }
 
-static int create_listen_socket(uint16_t port) {
+static int crear_socket_escucha(uint16_t puerto) {
     int fd;
     int opt = 1;
     struct sockaddr_in addr;
@@ -281,7 +304,7 @@ static int create_listen_socket(uint16_t port) {
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(port);
+    addr.sin_port = htons(puerto);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
         close(fd);
@@ -296,7 +319,7 @@ static int create_listen_socket(uint16_t port) {
     return fd;
 }
 
-static int read_exact(int fd, unsigned char *buffer, size_t len) {
+static int leer_exacto(int fd, unsigned char *buffer, size_t len) {
     size_t total = 0;
 
     while (total < len) {
@@ -317,23 +340,23 @@ static int read_exact(int fd, unsigned char *buffer, size_t len) {
     return 0;
 }
 
-static int connect_to_peer(const p2p_endpoint_t *peer) {
+static int conectar_par(const punto_red_p2p_t *par) {
     struct addrinfo hints;
-    struct addrinfo *results = NULL;
+    struct addrinfo *resultados = NULL;
     struct addrinfo *it;
     char port_text[16];
     int fd = -1;
 
-    snprintf(port_text, sizeof(port_text), "%u", peer->port);
+    snprintf(port_text, sizeof(port_text), "%u", par->puerto);
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
 
-    if (getaddrinfo(peer->ip, port_text, &hints, &results) != 0) {
+    if (getaddrinfo(par->ip, port_text, &hints, &resultados) != 0) {
         return -1;
     }
 
-    for (it = results; it != NULL; it = it->ai_next) {
+    for (it = resultados; it != NULL; it = it->ai_next) {
         fd = socket(it->ai_family, it->ai_socktype, it->ai_protocol);
         if (fd < 0) {
             continue;
@@ -345,28 +368,28 @@ static int connect_to_peer(const p2p_endpoint_t *peer) {
         fd = -1;
     }
 
-    freeaddrinfo(results);
+    freeaddrinfo(resultados);
     return fd;
 }
 
-static int file_matches_request(const char *path, uint64_t size, const char *hash) {
+static int archivo_calza_con_pedido(const char *ruta, uint64_t tamano, const char *hash) {
     struct stat st;
     char actual_hash[P2P_HASH_STR_LEN];
 
-    if (stat(path, &st) != 0) {
+    if (stat(ruta, &st) != 0) {
         return 0;
     }
-    if (!S_ISREG(st.st_mode) || (uint64_t)st.st_size != size) {
+    if (!S_ISREG(st.st_mode) || (uint64_t)st.st_size != tamano) {
         return -1;
     }
-    if (p2p_hash_file(path, actual_hash) != 0) {
+    if (calcular_hash_archivo(ruta, actual_hash) != 0) {
         return -1;
     }
     return strcmp(actual_hash, hash) == 0 ? 1 : -1;
 }
 
-static int build_partial_path(char *out, size_t out_size, const char *path) {
-    int written = snprintf(out, out_size, "%s.part", path);
+static int armar_ruta_parcial(char *out, size_t out_size, const char *ruta) {
+    int written = snprintf(out, out_size, "%s.part", ruta);
 
     if (written < 0 || (size_t)written >= out_size) {
         return -1;
@@ -374,42 +397,42 @@ static int build_partial_path(char *out, size_t out_size, const char *path) {
     return 0;
 }
 
-int transfer_download_from_peer(const p2p_client_context_t *context,
-                                const p2p_endpoint_t *peer,
-                                uint64_t size,
+int descargar_de_par(const contexto_cliente_p2p_t *contexto,
+                                const punto_red_p2p_t *par,
+                                uint64_t tamano,
                                 const char *hash,
-                                char *saved_path,
-                                size_t saved_path_size,
-                                int *already_present) {
+                                char *ruta_guardada,
+                                size_t tamano_ruta_guardada,
+                                int *ya_existe) {
     int fd;
-    char request[P2P_MAX_LINE];
-    char line[P2P_MAX_LINE];
-    char path[P2P_MAX_PATH];
+    char pedido[P2P_MAX_LINE];
+    char linea[P2P_MAX_LINE];
+    char ruta[P2P_MAX_PATH];
     char partial_path[P2P_MAX_PATH];
     unsigned char buffer[TRANSFER_BUFFER_SIZE];
     unsigned long long data_length;
-    uint64_t remaining = size;
+    uint64_t restante = tamano;
     FILE *output;
     int existing_status;
 
-    if (already_present != NULL) {
-        *already_present = 0;
+    if (ya_existe != NULL) {
+        *ya_existe = 0;
     }
-    if (context == NULL || peer == NULL || hash == NULL || strlen(hash) != P2P_HASH_HEX_LEN) {
+    if (contexto == NULL || par == NULL || hash == NULL || strlen(hash) != P2P_HASH_HEX_LEN) {
         return -1;
     }
-    if (join_path(path, sizeof(path), context->shared_folder, hash) != 0 ||
-        build_partial_path(partial_path, sizeof(partial_path), path) != 0) {
+    if (armar_ruta(ruta, sizeof(ruta), contexto->carpeta_compartida, hash) != 0 ||
+        armar_ruta_parcial(partial_path, sizeof(partial_path), ruta) != 0) {
         return -1;
     }
 
-    existing_status = file_matches_request(path, size, hash);
+    existing_status = archivo_calza_con_pedido(ruta, tamano, hash);
     if (existing_status > 0) {
-        if (saved_path != NULL && saved_path_size > 0) {
-            snprintf(saved_path, saved_path_size, "%s", path);
+        if (ruta_guardada != NULL && tamano_ruta_guardada > 0) {
+            snprintf(ruta_guardada, tamano_ruta_guardada, "%s", ruta);
         }
-        if (already_present != NULL) {
-            *already_present = 1;
+        if (ya_existe != NULL) {
+            *ya_existe = 1;
         }
         return 0;
     }
@@ -417,29 +440,29 @@ int transfer_download_from_peer(const p2p_client_context_t *context,
         return -1;
     }
 
-    fd = connect_to_peer(peer);
+    fd = conectar_par(par);
     if (fd < 0) {
         return -1;
     }
 
-    snprintf(request, sizeof(request), "GET %llu %s 0 %llu\n",
-             (unsigned long long)size, hash, (unsigned long long)size);
-    if (write_text(fd, request) != 0) {
+    snprintf(pedido, sizeof(pedido), "GET %llu %s 0 %llu\n",
+             (unsigned long long)tamano, hash, (unsigned long long)tamano);
+    if (escribir_texto(fd, pedido) != 0) {
         close(fd);
         return -1;
     }
 
-    if (read_line(fd, line, sizeof(line)) <= 0) {
+    if (leer_linea(fd, linea, sizeof(linea)) <= 0) {
         close(fd);
         return -1;
     }
 
-    if (strncmp(line, "ERROR ", 6) == 0) {
-        fprintf(stderr, "peer %s:%u returned %s\n", peer->ip, peer->port, line);
+    if (strncmp(linea, "ERROR ", 6) == 0) {
+        fprintf(stderr, "par %s:%u returned %s\n", par->ip, par->puerto, linea);
         close(fd);
         return -1;
     }
-    if (sscanf(line, "DATA %llu", &data_length) != 1 || data_length != size) {
+    if (sscanf(linea, "DATA %llu", &data_length) != 1 || data_length != tamano) {
         close(fd);
         return -1;
     }
@@ -451,10 +474,10 @@ int transfer_download_from_peer(const p2p_client_context_t *context,
         return -1;
     }
 
-    while (remaining > 0) {
-        size_t chunk = remaining > sizeof(buffer) ? sizeof(buffer) : (size_t)remaining;
+    while (restante > 0) {
+        size_t chunk = restante > sizeof(buffer) ? sizeof(buffer) : (size_t)restante;
 
-        if (read_exact(fd, buffer, chunk) != 0) {
+        if (leer_exacto(fd, buffer, chunk) != 0) {
             fclose(output);
             close(fd);
             unlink(partial_path);
@@ -466,7 +489,7 @@ int transfer_download_from_peer(const p2p_client_context_t *context,
             unlink(partial_path);
             return -1;
         }
-        remaining -= chunk;
+        restante -= chunk;
     }
 
     if (fclose(output) != 0) {
@@ -476,85 +499,85 @@ int transfer_download_from_peer(const p2p_client_context_t *context,
     }
     close(fd);
 
-    if (file_matches_request(partial_path, size, hash) <= 0) {
+    if (archivo_calza_con_pedido(partial_path, tamano, hash) <= 0) {
         unlink(partial_path);
         return -1;
     }
-    if (link(partial_path, path) != 0) {
+    if (link(partial_path, ruta) != 0) {
         unlink(partial_path);
         return -1;
     }
     unlink(partial_path);
 
-    if (saved_path != NULL && saved_path_size > 0) {
-        snprintf(saved_path, saved_path_size, "%s", path);
+    if (ruta_guardada != NULL && tamano_ruta_guardada > 0) {
+        snprintf(ruta_guardada, tamano_ruta_guardada, "%s", ruta);
     }
     return 0;
 }
 
 typedef struct {
-    const p2p_client_context_t *context;
-    const p2p_endpoint_t *peer;
-    uint64_t size;
+    const contexto_cliente_p2p_t *contexto;
+    const punto_red_p2p_t *par;
+    uint64_t tamano;
     const char *hash;
     const char *partial_path;
-    uint64_t offset;
-    uint64_t length;
+    uint64_t inicio;
+    uint64_t largo;
     int result;
 } range_download_t;
 
-static int create_empty_file(const char *path, uint64_t size) {
-    int fd = open(path, O_CREAT | O_TRUNC | O_WRONLY, 0600);
+static int crear_archivo_vacio(const char *ruta, uint64_t tamano) {
+    int fd = open(ruta, O_CREAT | O_TRUNC | O_WRONLY, 0600);
 
     if (fd < 0) {
         return -1;
     }
-    if (ftruncate(fd, (off_t)size) != 0) {
+    if (ftruncate(fd, (off_t)tamano) != 0) {
         close(fd);
-        unlink(path);
+        unlink(ruta);
         return -1;
     }
     close(fd);
     return 0;
 }
 
-static int download_range_to_path(const p2p_endpoint_t *peer,
-                                  uint64_t size,
+static int download_range_to_path(const punto_red_p2p_t *par,
+                                  uint64_t tamano,
                                   const char *hash,
-                                  uint64_t offset,
-                                  uint64_t length,
+                                  uint64_t inicio,
+                                  uint64_t largo,
                                   const char *partial_path) {
     int fd;
-    char request[P2P_MAX_LINE];
-    char line[P2P_MAX_LINE];
+    char pedido[P2P_MAX_LINE];
+    char linea[P2P_MAX_LINE];
     unsigned char buffer[TRANSFER_BUFFER_SIZE];
     unsigned long long data_length;
-    uint64_t remaining = length;
+    uint64_t restante = largo;
     FILE *output;
 
-    fd = connect_to_peer(peer);
+    fd = conectar_par(par);
     if (fd < 0) {
         return -1;
     }
 
-    snprintf(request, sizeof(request), "GET %llu %s %llu %llu\n",
-             (unsigned long long)size, hash,
-             (unsigned long long)offset, (unsigned long long)length);
-    if (write_text(fd, request) != 0) {
+    snprintf(pedido, sizeof(pedido), "GET %llu %s %llu %llu\n",
+             (unsigned long long)tamano, hash,
+             (unsigned long long)inicio, (unsigned long long)largo);
+    if (escribir_texto(fd, pedido) != 0) {
         close(fd);
         return -1;
     }
 
-    if (read_line(fd, line, sizeof(line)) <= 0) {
+    if (leer_linea(fd, linea, sizeof(linea)) <= 0) {
         close(fd);
         return -1;
     }
-    if (strncmp(line, "ERROR ", 6) == 0) {
-        fprintf(stderr, "peer %s:%u returned %s\n", peer->ip, peer->port, line);
+    if (strncmp(linea, "ERROR ", 6) == 0) {
+        fprintf(stderr, "par %s:%u returned %s\n", par->ip, par->puerto, linea);
         close(fd);
         return -1;
     }
-    if (sscanf(line, "DATA %llu", &data_length) != 1 || data_length != length) {
+    if (sscanf(linea, "DATA %llu", &data_length) != 1 || data_length != largo) {
         close(fd);
         return -1;
     }
@@ -564,16 +587,16 @@ static int download_range_to_path(const p2p_endpoint_t *peer,
         close(fd);
         return -1;
     }
-    if (fseeko(output, (off_t)offset, SEEK_SET) != 0) {
+    if (fseeko(output, (off_t)inicio, SEEK_SET) != 0) {
         fclose(output);
         close(fd);
         return -1;
     }
 
-    while (remaining > 0) {
-        size_t chunk = remaining > sizeof(buffer) ? sizeof(buffer) : (size_t)remaining;
+    while (restante > 0) {
+        size_t chunk = restante > sizeof(buffer) ? sizeof(buffer) : (size_t)restante;
 
-        if (read_exact(fd, buffer, chunk) != 0) {
+        if (leer_exacto(fd, buffer, chunk) != 0) {
             fclose(output);
             close(fd);
             return -1;
@@ -583,7 +606,7 @@ static int download_range_to_path(const p2p_endpoint_t *peer,
             close(fd);
             return -1;
         }
-        remaining -= chunk;
+        restante -= chunk;
     }
 
     if (fclose(output) != 0) {
@@ -594,24 +617,24 @@ static int download_range_to_path(const p2p_endpoint_t *peer,
     return 0;
 }
 
-static void *range_download_thread(void *arg) {
+static void *hilo_descarga_rango(void *arg) {
     range_download_t *range = arg;
 
-    range->result = download_range_to_path(range->peer, range->size, range->hash,
-                                           range->offset, range->length,
+    range->result = download_range_to_path(range->par, range->tamano, range->hash,
+                                           range->inicio, range->largo,
                                            range->partial_path);
     return NULL;
 }
 
 static int install_partial_file(const char *partial_path,
-                                const char *path,
-                                uint64_t size,
+                                const char *ruta,
+                                uint64_t tamano,
                                 const char *hash) {
-    if (file_matches_request(partial_path, size, hash) <= 0) {
+    if (archivo_calza_con_pedido(partial_path, tamano, hash) <= 0) {
         unlink(partial_path);
         return -1;
     }
-    if (link(partial_path, path) != 0) {
+    if (link(partial_path, ruta) != 0) {
         unlink(partial_path);
         return -1;
     }
@@ -619,55 +642,55 @@ static int install_partial_file(const char *partial_path,
     return 0;
 }
 
-int transfer_download_from_peers(const p2p_client_context_t *context,
-                                 const p2p_endpoint_t *peers,
-                                 size_t peer_count,
-                                 uint64_t size,
+int descargar_de_pares(const contexto_cliente_p2p_t *contexto,
+                                 const punto_red_p2p_t *pares,
+                                 size_t cantidad_pares,
+                                 uint64_t tamano,
                                  const char *hash,
-                                 char *saved_path,
-                                 size_t saved_path_size,
-                                 int *already_present,
-                                 int *segmented) {
-    char path[P2P_MAX_PATH];
+                                 char *ruta_guardada,
+                                 size_t tamano_ruta_guardada,
+                                 int *ya_existe,
+                                 int *segmentado) {
+    char ruta[P2P_MAX_PATH];
     char partial_path[P2P_MAX_PATH];
     range_download_t ranges[P2P_MAX_PEERS];
     pthread_t threads[P2P_MAX_PEERS];
     size_t range_count;
-    uint64_t offset = 0;
+    uint64_t inicio = 0;
     uint64_t base;
     uint64_t extra;
     int existing_status;
     int failed = 0;
 
-    if (already_present != NULL) {
-        *already_present = 0;
+    if (ya_existe != NULL) {
+        *ya_existe = 0;
     }
-    if (segmented != NULL) {
-        *segmented = 0;
+    if (segmentado != NULL) {
+        *segmentado = 0;
     }
-    if (context == NULL || peers == NULL || peer_count == 0 ||
+    if (contexto == NULL || pares == NULL || cantidad_pares == 0 ||
         hash == NULL || strlen(hash) != P2P_HASH_HEX_LEN) {
         return -1;
     }
 
-    if (peer_count == 1 || size == 0) {
-        return transfer_download_from_peer(context, &peers[0], size, hash,
-                                           saved_path, saved_path_size,
-                                           already_present);
+    if (cantidad_pares == 1 || tamano == 0) {
+        return descargar_de_par(contexto, &pares[0], tamano, hash,
+                                           ruta_guardada, tamano_ruta_guardada,
+                                           ya_existe);
     }
 
-    if (join_path(path, sizeof(path), context->shared_folder, hash) != 0 ||
-        build_partial_path(partial_path, sizeof(partial_path), path) != 0) {
+    if (armar_ruta(ruta, sizeof(ruta), contexto->carpeta_compartida, hash) != 0 ||
+        armar_ruta_parcial(partial_path, sizeof(partial_path), ruta) != 0) {
         return -1;
     }
 
-    existing_status = file_matches_request(path, size, hash);
+    existing_status = archivo_calza_con_pedido(ruta, tamano, hash);
     if (existing_status > 0) {
-        if (saved_path != NULL && saved_path_size > 0) {
-            snprintf(saved_path, saved_path_size, "%s", path);
+        if (ruta_guardada != NULL && tamano_ruta_guardada > 0) {
+            snprintf(ruta_guardada, tamano_ruta_guardada, "%s", ruta);
         }
-        if (already_present != NULL) {
-            *already_present = 1;
+        if (ya_existe != NULL) {
+            *ya_existe = 1;
         }
         return 0;
     }
@@ -675,31 +698,31 @@ int transfer_download_from_peers(const p2p_client_context_t *context,
         return -1;
     }
 
-    range_count = peer_count > P2P_MAX_PEERS ? P2P_MAX_PEERS : peer_count;
-    if ((uint64_t)range_count > size) {
-        range_count = (size_t)size;
+    range_count = cantidad_pares > P2P_MAX_PEERS ? P2P_MAX_PEERS : cantidad_pares;
+    if ((uint64_t)range_count > tamano) {
+        range_count = (size_t)tamano;
     }
 
     unlink(partial_path);
-    if (create_empty_file(partial_path, size) != 0) {
+    if (crear_archivo_vacio(partial_path, tamano) != 0) {
         return -1;
     }
 
-    base = size / range_count;
-    extra = size % range_count;
+    base = tamano / range_count;
+    extra = tamano % range_count;
     memset(ranges, 0, sizeof(ranges));
     for (size_t i = 0; i < range_count; i++) {
-        ranges[i].context = context;
-        ranges[i].peer = &peers[i];
-        ranges[i].size = size;
+        ranges[i].contexto = contexto;
+        ranges[i].par = &pares[i];
+        ranges[i].tamano = tamano;
         ranges[i].hash = hash;
         ranges[i].partial_path = partial_path;
-        ranges[i].offset = offset;
-        ranges[i].length = base + (i < extra ? 1 : 0);
+        ranges[i].inicio = inicio;
+        ranges[i].largo = base + (i < extra ? 1 : 0);
         ranges[i].result = -1;
-        offset += ranges[i].length;
+        inicio += ranges[i].largo;
 
-        if (pthread_create(&threads[i], NULL, range_download_thread, &ranges[i]) != 0) {
+        if (pthread_create(&threads[i], NULL, hilo_descarga_rango, &ranges[i]) != 0) {
             ranges[i].result = -1;
             failed = 1;
             for (size_t j = 0; j < i; j++) {
@@ -725,12 +748,12 @@ int transfer_download_from_peers(const p2p_client_context_t *context,
             }
 
             ranges[i].result = -1;
-            for (size_t j = 0; j < peer_count && j < P2P_MAX_PEERS; j++) {
-                if (&peers[j] == ranges[i].peer) {
+            for (size_t j = 0; j < cantidad_pares && j < P2P_MAX_PEERS; j++) {
+                if (&pares[j] == ranges[i].par) {
                     continue;
                 }
-                if (download_range_to_path(&peers[j], size, hash,
-                                           ranges[i].offset, ranges[i].length,
+                if (download_range_to_path(&pares[j], tamano, hash,
+                                           ranges[i].inicio, ranges[i].largo,
                                            partial_path) == 0) {
                     ranges[i].result = 0;
                     break;
@@ -746,49 +769,49 @@ int transfer_download_from_peers(const p2p_client_context_t *context,
         }
     }
 
-    if (install_partial_file(partial_path, path, size, hash) != 0) {
+    if (install_partial_file(partial_path, ruta, tamano, hash) != 0) {
         return -1;
     }
 
-    if (saved_path != NULL && saved_path_size > 0) {
-        snprintf(saved_path, saved_path_size, "%s", path);
+    if (ruta_guardada != NULL && tamano_ruta_guardada > 0) {
+        snprintf(ruta_guardada, tamano_ruta_guardada, "%s", ruta);
     }
-    if (segmented != NULL) {
-        *segmented = 1;
+    if (segmentado != NULL) {
+        *segmentado = 1;
     }
     return 0;
 }
 
-int transfer_server_start(const p2p_client_context_t *context) {
-    transfer_server_t *server;
-    pthread_t thread;
+int iniciar_servidor_transferencia(const contexto_cliente_p2p_t *contexto) {
+    servidor_transferencia_t *servidor;
+    pthread_t hilo;
     int listen_fd;
 
-    if (context == NULL) {
+    if (contexto == NULL) {
         return -1;
     }
 
-    listen_fd = create_listen_socket(context->transfer_port);
+    listen_fd = crear_socket_escucha(contexto->puerto_transferencia);
     if (listen_fd < 0) {
         return -1;
     }
 
-    server = calloc(1, sizeof(*server));
-    if (server == NULL) {
+    servidor = calloc(1, sizeof(*servidor));
+    if (servidor == NULL) {
         close(listen_fd);
         return -1;
     }
 
-    server->listen_fd = listen_fd;
-    server->context = context;
+    servidor->listen_fd = listen_fd;
+    servidor->contexto = contexto;
 
-    if (pthread_create(&thread, NULL, transfer_accept_thread, server) != 0) {
+    if (pthread_create(&hilo, NULL, hilo_aceptar_transferencias, servidor) != 0) {
         close(listen_fd);
-        free(server);
+        free(servidor);
         return -1;
     }
 
-    pthread_detach(thread);
-    printf("transfer server listening on port %u\n", context->transfer_port);
+    pthread_detach(hilo);
+    printf("servidor de transferencia escuchando en puerto %u\n", contexto->puerto_transferencia);
     return 0;
 }

@@ -8,11 +8,11 @@
 typedef struct {
     uint64_t high;
     uint64_t low;
-} p2p_hash_t;
+} hash_p2p_t;
 
-void p2p_hash_init(p2p_hash_t *hash);
-void p2p_hash_update(p2p_hash_t *hash, const unsigned char *data, size_t len);
-void p2p_hash_final_hex(const p2p_hash_t *hash, char out[P2P_HASH_STR_LEN]);
-int p2p_hash_file(const char *path, char out[P2P_HASH_STR_LEN]);
+void iniciar_hash_p2p(hash_p2p_t *hash);
+void actualizar_hash_p2p(hash_p2p_t *hash, const unsigned char *datos, size_t len);
+void cerrar_hash_hex_p2p(const hash_p2p_t *hash, char out[P2P_HASH_STR_LEN]);
+int calcular_hash_archivo(const char *ruta, char out[P2P_HASH_STR_LEN]);
 
 #endif

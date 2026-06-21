@@ -1,4 +1,14 @@
-/* console.c - Interfaz de consola: find y request */
+/*
+ * console.c - Interfaz de consola: find y request.
+ *
+ * Documentacion de funciones:
+ * mostrar_archivos: imprime archivos locales; recibe contexto; ayuda a revisar hashes y tamanos.
+ * mostrar_vecinos: imprime vecinos; recibe contexto; muestra la topologia recibida.
+ * atender_find_servidor: ejecuta find -s; recibe contexto y nombre; resuelve busqueda central.
+ * leer_argumentos_request: lee tamano/hash; recibe texto y salidas; valida request <S> <H>.
+ * atender_request_lookup: busca y descarga; recibe contexto y argumentos; resuelve request.
+ * correr_consola_cliente: procesa comandos; recibe contexto; implementa la consola del cliente.
+ */
 
 #include "client.h"
 #include "transfer.h"
@@ -10,89 +20,89 @@
 #include <stdlib.h>
 #include <string.h>
 
-static void print_files(const p2p_client_context_t *context) {
-    if (context->file_count == 0) {
-        printf("no local files\n");
+static void mostrar_archivos(const contexto_cliente_p2p_t *contexto) {
+    if (contexto->cantidad_archivos == 0) {
+        printf("no hay archivos locales\n");
         return;
     }
 
-    for (size_t i = 0; i < context->file_count; i++) {
+    for (size_t i = 0; i < contexto->cantidad_archivos; i++) {
         printf("%llu %s %s\n",
-               (unsigned long long)context->files[i].size,
-               context->files[i].hash,
-               context->files[i].name);
+               (unsigned long long)contexto->archivos[i].tamano,
+               contexto->archivos[i].hash,
+               contexto->archivos[i].nombre);
     }
 }
 
-static void print_neighbors(const p2p_client_context_t *context) {
-    if (context->neighbor_count == 0) {
-        printf("no neighbors\n");
+static void mostrar_vecinos(const contexto_cliente_p2p_t *contexto) {
+    if (contexto->cantidad_vecinos == 0) {
+        printf("no hay vecinos\n");
         return;
     }
 
-    for (size_t i = 0; i < context->neighbor_count; i++) {
-        printf("%s %u\n", context->neighbors[i].ip, context->neighbors[i].port);
+    for (size_t i = 0; i < contexto->cantidad_vecinos; i++) {
+        printf("%s %u\n", contexto->vecinos[i].ip, contexto->vecinos[i].puerto);
     }
 }
 
-static void handle_find_server(const p2p_client_context_t *context, const char *name) {
-    p2p_endpoint_t peers[P2P_MAX_PEERS];
-    size_t peer_count = 0;
+static void atender_find_servidor(const contexto_cliente_p2p_t *contexto, const char *nombre) {
+    punto_red_p2p_t pares[P2P_MAX_PEERS];
+    size_t cantidad_pares = 0;
 
-    if (name == NULL || name[0] == '\0') {
-        printf("usage: find -s <name>\n");
+    if (nombre == NULL || nombre[0] == '\0') {
+        printf("uso: find -s <nombre>\n");
         return;
     }
 
-    if (client_find_on_server(context, name, peers, P2P_MAX_PEERS, &peer_count) != 0) {
-        printf("server search failed\n");
+    if (buscar_en_servidor(contexto, nombre, pares, P2P_MAX_PEERS, &cantidad_pares) != 0) {
+        printf("fallo la busqueda en servidor\n");
         return;
     }
 
-    if (peer_count == 0) {
-        printf("no peers found for %s\n", name);
+    if (cantidad_pares == 0) {
+        printf("no se encontraron pares para %s\n", nombre);
         return;
     }
 
-    printf("peers for %s: %zu\n", name, peer_count);
-    for (size_t i = 0; i < peer_count; i++) {
-        printf("%s %u\n", peers[i].ip, peers[i].port);
+    printf("pares para %s: %zu\n", nombre, cantidad_pares);
+    for (size_t i = 0; i < cantidad_pares; i++) {
+        printf("%s %u\n", pares[i].ip, pares[i].puerto);
     }
 }
-static void handle_find_distributed(const p2p_client_context_t *context,
-                                    const char *name) {
-    p2p_file_metadata_t results[P2P_MAX_PEERS];
-    size_t result_count = 0;
+static void handle_find_distributed(const contexto_cliente_p2p_t *contexto,
+                                    const char *nombre) {
+    metadato_archivo_p2p_t resultados[P2P_MAX_PEERS];
+    size_t cantidad_resultados = 0;
 
-    if (name == NULL || name[0] == '\0') {
-        printf("usage: find -d <name>\n");
+    if (nombre == NULL || nombre[0] == '\0') {
+        printf("uso: find -d <nombre>\n");
         return;
     }
-    if (distributed_search_neighbors(context, name, results,
-                                     P2P_MAX_PEERS, &result_count) != 0) {
-        printf("distributed search failed\n");
+    if (buscar_en_vecinos(contexto, nombre, resultados,
+                                     P2P_MAX_PEERS, &cantidad_resultados) != 0) {
+        printf("fallo la busqueda distribuida\n");
         return;
     }
-    if (result_count == 0) {
-        printf("no distributed matches for %s\n", name);
+    if (cantidad_resultados == 0) {
+        printf("no hay resultados distribuidos para %s\n", nombre);
         return;
     }
-    printf("distributed matches for %s: %zu\n", name, result_count);
-    for (size_t i = 0; i < result_count; i++) {
+    printf("resultados distribuidos para %s: %zu\n", nombre, cantidad_resultados);
+    for (size_t i = 0; i < cantidad_resultados; i++) {
         printf("%llu %s %s %s %u\n",
-               (unsigned long long)results[i].size, results[i].hash,
-               results[i].name, results[i].owner.ip, results[i].owner.port);
+               (unsigned long long)resultados[i].tamano, resultados[i].hash,
+               resultados[i].nombre, resultados[i].dueno.ip, resultados[i].dueno.puerto);
     }
 }
 
 
-static int parse_request_args(const char *args, uint64_t *size, char hash[P2P_HASH_STR_LEN]) {
+static int leer_argumentos_request(const char *args, uint64_t *tamano, char hash[P2P_HASH_STR_LEN]) {
     char size_text[32];
     char hash_text[P2P_HASH_STR_LEN];
     unsigned long long parsed_size;
     char *end = NULL;
 
-    if (args == NULL || size == NULL || hash == NULL) {
+    if (args == NULL || tamano == NULL || hash == NULL) {
         return -1;
     }
 
@@ -110,101 +120,101 @@ static int parse_request_args(const char *args, uint64_t *size, char hash[P2P_HA
         return -1;
     }
 
-    *size = (uint64_t)parsed_size;
+    *tamano = (uint64_t)parsed_size;
     snprintf(hash, P2P_HASH_STR_LEN, "%s", hash_text);
     return 0;
 }
 
-static void handle_request_lookup(const p2p_client_context_t *context, const char *args) {
-    uint64_t size;
+static void atender_request_lookup(const contexto_cliente_p2p_t *contexto, const char *args) {
+    uint64_t tamano;
     char hash[P2P_HASH_STR_LEN];
-    char saved_path[P2P_MAX_PATH];
-    p2p_endpoint_t peers[P2P_MAX_PEERS];
-    size_t peer_count = 0;
-    int already_present = 0;
-    int segmented = 0;
+    char ruta_guardada[P2P_MAX_PATH];
+    punto_red_p2p_t pares[P2P_MAX_PEERS];
+    size_t cantidad_pares = 0;
+    int ya_existe = 0;
+    int segmentado = 0;
 
-    if (parse_request_args(args, &size, hash) != 0) {
-        printf("usage: request <size> <hash>\n");
+    if (leer_argumentos_request(args, &tamano, hash) != 0) {
+        printf("uso: request <tamano> <hash>\n");
         return;
     }
 
-    if (client_lookup_on_server(context, size, hash, peers, P2P_MAX_PEERS, &peer_count) != 0) {
-        printf("request lookup failed\n");
+    if (buscar_hash_en_servidor(contexto, tamano, hash, pares, P2P_MAX_PEERS, &cantidad_pares) != 0) {
+        printf("fallo la busqueda del request\n");
         return;
     }
 
-    if (peer_count == 0) {
-        printf("no peers found for %llu %s\n", (unsigned long long)size, hash);
+    if (cantidad_pares == 0) {
+        printf("no se encontraron pares para %llu %s\n", (unsigned long long)tamano, hash);
         return;
     }
 
-    printf("candidate peers for %llu %s: %zu\n",
-           (unsigned long long)size, hash, peer_count);
-    for (size_t i = 0; i < peer_count; i++) {
-        printf("%s %u\n", peers[i].ip, peers[i].port);
+    printf("pares candidatos para %llu %s: %zu\n",
+           (unsigned long long)tamano, hash, cantidad_pares);
+    for (size_t i = 0; i < cantidad_pares; i++) {
+        printf("%s %u\n", pares[i].ip, pares[i].puerto);
     }
 
-    if (transfer_download_from_peers(context, peers, peer_count, size, hash,
-                                     saved_path, sizeof(saved_path),
-                                     &already_present, &segmented) != 0) {
-        printf("download failed for %llu %s\n", (unsigned long long)size, hash);
+    if (descargar_de_pares(contexto, pares, cantidad_pares, tamano, hash,
+                                     ruta_guardada, sizeof(ruta_guardada),
+                                     &ya_existe, &segmentado) != 0) {
+        printf("fallo la descarga de %llu %s\n", (unsigned long long)tamano, hash);
         return;
     }
 
-    if (already_present) {
-        printf("download already present at %s\n", saved_path);
-    } else if (segmented) {
-        printf("downloaded %llu %s to %s using %zu peers\n",
-               (unsigned long long)size, hash, saved_path, peer_count);
+    if (ya_existe) {
+        printf("descarga ya existe en %s\n", ruta_guardada);
+    } else if (segmentado) {
+        printf("descargado %llu %s en %s usando %zu pares\n",
+               (unsigned long long)tamano, hash, ruta_guardada, cantidad_pares);
     } else {
-        printf("downloaded %llu %s to %s\n", (unsigned long long)size, hash, saved_path);
+        printf("descargado %llu %s en %s\n", (unsigned long long)tamano, hash, ruta_guardada);
     }
 }
 
-void client_run_console(p2p_client_context_t *context) {
-    char line[P2P_MAX_LINE];
+void correr_consola_cliente(contexto_cliente_p2p_t *contexto) {
+    char linea[P2P_MAX_LINE];
 
     while (1) {
         printf("p2p> ");
         fflush(stdout);
 
-        if (fgets(line, sizeof(line), stdin) == NULL) {
+        if (fgets(linea, sizeof(linea), stdin) == NULL) {
             printf("\n");
             return;
         }
 
-        line[strcspn(line, "\r\n")] = '\0';
+        linea[strcspn(linea, "\r\n")] = '\0';
 
-        if (strcmp(line, "quit") == 0 || strcmp(line, "exit") == 0) {
+        if (strcmp(linea, "quit") == 0 || strcmp(linea, "exit") == 0) {
             return;
         }
-        if (strcmp(line, "files") == 0) {
-            print_files(context);
+        if (strcmp(linea, "archivos") == 0) {
+            mostrar_archivos(contexto);
             continue;
         }
-        if (strcmp(line, "neighbors") == 0) {
-            print_neighbors(context);
+        if (strcmp(linea, "vecinos") == 0) {
+            mostrar_vecinos(contexto);
             continue;
         }
-        if (strncmp(line, "find -s ", 8) == 0) {
-            handle_find_server(context, line + 8);
+        if (strncmp(linea, "find -s ", 8) == 0) {
+            atender_find_servidor(contexto, linea + 8);
             continue;
         }
-        if (strncmp(line, "find -d ", 8) == 0) {
-            handle_find_distributed(context, line + 8);
+        if (strncmp(linea, "find -d ", 8) == 0) {
+            handle_find_distributed(contexto, linea + 8);
             continue;
         }
-        if (strncmp(line, "request ", 8) == 0) {
-            handle_request_lookup(context, line + 8);
+        if (strncmp(linea, "request ", 8) == 0) {
+            atender_request_lookup(contexto, linea + 8);
             continue;
         }
-        if (strncmp(line, "find", 4) == 0 || strcmp(line, "request") == 0) {
-            printf("command not implemented in this component yet\n");
+        if (strncmp(linea, "find", 4) == 0 || strcmp(linea, "request") == 0) {
+            printf("comando todavia no implementado\n");
             continue;
         }
-        if (line[0] != '\0') {
-            printf("unknown command\n");
+        if (linea[0] != '\0') {
+            printf("comando desconocido\n");
         }
     }
 }

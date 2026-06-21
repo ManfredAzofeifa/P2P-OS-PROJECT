@@ -9,17 +9,17 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-static uint16_t parse_port(const char *text) {
+static uint16_t leer_puerto(const char *texto) {
     char *end = NULL;
-    unsigned long value = strtoul(text, &end, 10);
-    if (!text[0] || *end || !value || value > 65535UL) exit(2);
+    unsigned long value = strtoul(texto, &end, 10);
+    if (!texto[0] || *end || !value || value > 65535UL) exit(2);
     return (uint16_t)value;
 }
 
-static int write_all(int fd, const char *text) {
-    size_t total = 0, length = strlen(text);
-    while (total < length) {
-        ssize_t n = send(fd, text + total, length - total, 0);
+static int escribir_todo(int fd, const char *texto) {
+    size_t total = 0, largo = strlen(texto);
+    while (total < largo) {
+        ssize_t n = send(fd, texto + total, largo - total, 0);
         if (n < 0) {
             if (errno == EINTR) continue;
             return -1;
@@ -30,9 +30,9 @@ static int write_all(int fd, const char *text) {
 }
 
 static int send_search(uint16_t target_port, uint16_t origin_port,
-                       const char *query_id, const char *term) {
+                       const char *id_consulta, const char *termino) {
     struct sockaddr_in address;
-    char line[1024];
+    char linea[1024];
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
     memset(&address, 0, sizeof(address));
@@ -43,9 +43,9 @@ static int send_search(uint16_t target_port, uint16_t origin_port,
         close(fd);
         return -1;
     }
-    snprintf(line, sizeof(line), "DSEARCH %s 127.0.0.1 %u 4 %s\n",
-             query_id, origin_port, term);
-    if (write_all(fd, line) != 0) {
+    snprintf(linea, sizeof(linea), "DSEARCH %s 127.0.0.1 %u 4 %s\n",
+             id_consulta, origin_port, termino);
+    if (escribir_todo(fd, linea) != 0) {
         close(fd);
         return -1;
     }
@@ -53,24 +53,24 @@ static int send_search(uint16_t target_port, uint16_t origin_port,
     return 0;
 }
 
-static int read_line(int fd, char *line, size_t size) {
+static int leer_linea(int fd, char *linea, size_t tamano) {
     size_t used = 0;
-    while (used + 1 < size) {
-        ssize_t n = recv(fd, line + used, 1, 0);
+    while (used + 1 < tamano) {
+        ssize_t n = recv(fd, linea + used, 1, 0);
         if (n <= 0) break;
-        if (line[used++] == '\n') break;
+        if (linea[used++] == '\n') break;
     }
-    line[used] = '\0';
+    linea[used] = '\0';
     return used > 0 ? 0 : -1;
 }
 
 int main(int argc, char **argv) {
     struct sockaddr_in address;
     uint16_t target_port, origin_port;
-    int listen_fd, enabled = 1, results = 0;
+    int listen_fd, enabled = 1, resultados = 0;
     if (argc != 5) return 2;
-    target_port = parse_port(argv[1]);
-    origin_port = parse_port(argv[2]);
+    target_port = leer_puerto(argv[1]);
+    origin_port = leer_puerto(argv[2]);
 
     listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) return 1;
@@ -105,20 +105,20 @@ int main(int argc, char **argv) {
         }
         if (ready == 0) break;
         if (FD_ISSET(listen_fd, &readable)) {
-            char line[1024];
+            char linea[1024];
             int fd = accept(listen_fd, NULL, NULL);
             if (fd < 0) {
                 close(listen_fd);
                 return 1;
             }
-            if (read_line(fd, line, sizeof(line)) == 0) {
-                fputs(line, stdout);
-                results++;
+            if (leer_linea(fd, linea, sizeof(linea)) == 0) {
+                fputs(linea, stdout);
+                resultados++;
             }
             close(fd);
         }
     }
-    printf("results %d\n", results);
+    printf("resultados %d\n", resultados);
     close(listen_fd);
-    return results == 1 ? 0 : 1;
+    return resultados == 1 ? 0 : 1;
 }

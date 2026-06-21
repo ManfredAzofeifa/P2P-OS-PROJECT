@@ -1,237 +1,343 @@
-# P2P File-Sharing Simulator
+# Simulador P2P de archivos
 
-Operating Systems course project for simulating peer-to-peer file discovery and transfer on standard Linux using C, POSIX threads, and sockets.
+Proyecto de Sistemas Operativos hecho en C para simular busqueda y descarga de archivos entre clientes P2P usando sockets y `pthread` en Linux.
 
-This repository should stay in C for the project implementation. Shell scripts are allowed only as test harnesses, and the documentation may stay in LaTeX.
+## Objetivo
 
-## Project Objective
+El sistema permite que varios clientes compartan una carpeta. Al iniciar, cada cliente registra en un servidor central los archivos que tiene, junto con:
 
-Build a P2P file-sharing simulator where clients register local files, discover peers that own a file, and download file contents from one or more peers.
+- hash propio del contenido
+- tamano
+- IP del cliente
+- puerto de transferencia
 
-The simulator must support:
+Luego un usuario puede buscar archivos por nombre, buscarlos de forma distribuida por vecinos, y pedir una descarga por tamano y hash.
 
-- A custom content hash implemented in this repository, without hash libraries.
-- A central P2P server that stores metadata: hash, size, owner IP, and owner transfer port.
-- P2P clients that register shared-folder files at startup.
-- Console commands:
-  - `find -s <name>` for centralized server search.
-  - `find -d <name>` for distributed neighbor search.
-  - `find <name>` to try server search first, then distributed search on timeout.
-  - `request <S> <H>` to fetch a file by size and hash.
-- File transfer by byte ranges, split across multiple peers when possible.
-- Distributed flood search with TTL, query IDs, direct replies to the originator, duplicate-query dropping, and seen-query expiration.
-- Resilience when a shared folder or mounted device disappears while a client is running.
+## Requisitos cubiertos
 
-## Implementation Rules
+- Funcion hash propia, sin bibliotecas externas.
+- Servidor P2P con metadatos de archivos.
+- Cliente P2P con argumentos por consola.
+- Registro automatico de archivos de la carpeta compartida.
+- `find -s <nombre>` para busqueda centralizada.
+- `find -d <nombre>` para busqueda distribuida por vecinos.
+- `find <nombre>` para intentar servidor y luego distribuida.
+- `request <S> <H>` para descargar por tamano y hash.
+- Transferencia por rangos de bytes.
+- Descarga segmentada usando varios pares cuando hay mas de un candidato.
+- Reintento de rangos si un par falla.
+- Reensamblado del archivo descargado.
+- Busqueda distribuida con TTL, ID de consulta, cache de vistos y expiracion.
+- Manejo seguro cuando la carpeta compartida no existe o se desconecta.
 
-- Use C, not C++.
-- Use standard Linux APIs, sockets, and `pthread`.
-- Do not add external libraries.
-- Keep the socket protocol line-oriented and documented in `protocol/protocol.h`.
-- Keep shared protocol constants and structs in headers rather than duplicating literals across modules.
-- Prefer small component tests before full integration tests.
-
-## Current State
-
-Implemented:
-
-- Shared protocol constants and message contract in `protocol/protocol.h`.
-- Shared endpoint and file metadata structs in `server/metadata.h`.
-- Custom content hash in `server/hash.c` and `server/hash.h`.
-- Threaded TCP server in `server/server.c`.
-- Server-side metadata registry protected by a mutex.
-- Server protocol support for:
-  - `REGISTER <transfer_port> <file_count>`
-  - `FILE <size> <hash> <name>`
-  - `END`
-  - `FIND <name>`
-  - `LOOKUP <size> <hash>`
-- Server returns recent active clients as neighbors during registration.
-- Client startup in `client/client.c`.
-- Client CLI parsing for:
-  ```bash
-  ./bin/client <server_ip> <server_port> <transfer_port> <shared_folder>
-  ```
-- Shared-folder scan for regular files.
-- Client-side file size and custom-hash calculation.
-- Client registration with the server.
-- Client parsing and in-memory storage for returned neighbors.
-- Minimal console loop in `client/console.c` with:
-  - `files`
-  - `neighbors`
-  - `find -s <name>`
-  - `find -d <name>`
-  - `request <S> <H>`
-  - `quit`
-  - `exit`
-- Centralized client search using `FIND`, including peer response parsing and no-match reporting.
-- Request lookup setup using `LOOKUP`, including candidate peer parsing and no-match reporting.
-- Client download requests from one candidate peer transfer port.
-- Multi-peer segmented download and reassembly when multiple `LOOKUP` candidates are available.
-- Segmented downloads split the file into byte ranges, fetch ranges concurrently, retry failed ranges against remaining peers, and reassemble into `<shared_folder>/<hash>`.
-- `request <S> <H>` saves successful downloads as `<shared_folder>/<hash>` because the command does not include a file name.
-- Existing matching downloads are reused instead of overwritten; mismatched existing files fail the download.
-- Partial download files use a `.part` suffix and are removed on transfer failure.
-- Peer file serving in `client/transfer.c`.
-- Client transfer listener on `<transfer_port>`.
-- Peer transfer support for:
-  - `GET <size> <hash> <offset> <length>`
-  - `DATA <length>` followed by raw bytes
-  - `ERROR <text>`
-- One detached thread per incoming transfer request.
-- Byte-range reads from local files by size and hash.
-- Startup resilience for missing shared folders: the client warns, registers zero files, and does not crash.
-- Direct-neighbor distributed search using the reserved `DSEARCH` and `DRESULT` messages.
-- Local shared-file name matching with direct result replies to the originator.
-- Bounded, mutex-protected query ID cache for distributed searches.
-- TTL decrementing and forwarding to neighbors until TTL is exhausted.
-- Duplicate distributed-query suppression.
-- Seen-query expiration using `P2P_SEEN_QUERY_TTL_SECONDS`.
-- Distributed search output includes matching file size, hash, name, owner IP, and owner port.
-- Full multi-client integration coverage using six real client processes in a looped and TTL-bounded topology.
-- Tests for hash behavior, server protocol behavior, client registration, centralized client search, request lookup, single-peer downloads, segmented downloads, reassembly, peer failover, unavailable peers, failed transfers, and peer range serving.
-
-Pending:
-
-- None. The current project roadmap is complete.
-
-## Roadmap Status
-
-The planned implementation roadmap is complete. Any additional work should begin only with an explicitly defined new scope.
-
-## Socket Protocol
-
-The protocol is documented in `protocol/protocol.h`.
-
-Server-facing messages:
-
-```text
-REGISTER <transfer_port> <file_count>
-FILE <size> <hash> <name>
-END
-FIND <name>
-LOOKUP <size> <hash>
-```
-
-Server responses:
-
-```text
-OK <text>
-ERROR <text>
-PEERS <count>
-PEER <ip> <port>
-NEIGHBORS <count>
-NEIGHBOR <ip> <port>
-END
-```
-
-Peer transfer messages:
-
-```text
-GET <size> <hash> <offset> <length>
-DATA <length>
-<length raw bytes>
-ERROR <text>
-```
-
-Direct-neighbor distributed search uses:
-
-```text
-DSEARCH <query_id> <origin_ip> <origin_port> <ttl> <term>
-DRESULT <query_id> <size> <hash> <name> <owner_ip> <owner_port>
-```
-
-## Build
-
-Build the server:
-
-```bash
-make server
-```
-
-Build every currently implemented binary:
+## Compilar
 
 ```bash
 make
 ```
 
-At this point, `make` builds both the server and the client.
+Esto genera:
 
-Clean generated binaries:
+```text
+bin/server
+bin/client
+```
+
+Limpiar binarios:
 
 ```bash
 make clean
 ```
 
-## Tests
+## Ejecutar
 
-Run all current tests:
+Servidor:
+
+```bash
+./bin/server <puerto>
+```
+
+Cliente:
+
+```bash
+./bin/client <ip_servidor> <puerto_servidor> <puerto_transferencia> <carpeta_compartida>
+```
+
+Ejemplo:
+
+```bash
+./bin/server 39090
+./bin/client 127.0.0.1 39090 41001 /tmp/p2p-a
+./bin/client 127.0.0.1 39090 41002 /tmp/p2p-b
+```
+
+## Comandos del cliente
+
+### `archivos`
+
+Muestra los archivos locales registrados por el cliente:
+
+```text
+<tamano> <hash> <nombre>
+```
+
+Sirve para copiar el tamano y hash que luego se usan con `request`.
+
+### `vecinos`
+
+Muestra los vecinos que el servidor devolvio al momento del registro.
+
+Estos vecinos son los clientes recientes que se usan para `find -d`.
+
+### `find -s <nombre>`
+
+Hace busqueda centralizada.
+
+Como se resuelve:
+
+1. El cliente abre una conexion TCP al servidor.
+2. Envia:
+   ```text
+   FIND <nombre>
+   ```
+3. El servidor revisa sus metadatos registrados.
+4. Si encuentra archivos con ese nombre, responde:
+   ```text
+   PEERS <cantidad>
+   PEER <ip> <puerto>
+   END
+   ```
+5. El cliente imprime los pares encontrados.
+
+Este comando busca por nombre, no por hash.
+
+### `find -d <nombre>`
+
+Hace busqueda distribuida.
+
+Como se resuelve:
+
+1. El cliente genera un ID de consulta.
+2. Envia `DSEARCH` a sus vecinos.
+3. Cada vecino revisa si ya vio ese ID.
+4. Si ya lo vio, lo descarta.
+5. Si tiene un archivo cuyo nombre calza, responde directo al originador con `DRESULT`.
+6. Si no se agoto el TTL, reenvia la busqueda a sus vecinos.
+7. El originador junta los resultados recibidos por un tiempo corto.
+
+Esto demuestra inundacion controlada por TTL y evita ciclos con el cache de consultas vistas.
+
+### `find <nombre>`
+
+Intenta primero `find -s <nombre>`.
+
+Si no logra resolverlo por servidor, usa busqueda distribuida como respaldo.
+
+### `request <S> <H>`
+
+Descarga un archivo por tamano y hash.
+
+Como se resuelve:
+
+1. El cliente pregunta al servidor:
+   ```text
+   LOOKUP <S> <H>
+   ```
+2. El servidor responde los pares que tienen ese tamano y hash.
+3. Si hay un solo par, el cliente descarga desde ese par.
+4. Si hay varios pares, divide el archivo en rangos.
+5. Cada rango se pide con:
+   ```text
+   GET <S> <H> <inicio> <largo>
+   ```
+6. El par responde:
+   ```text
+   DATA <largo>
+   <bytes>
+   ```
+7. El cliente reensambla el archivo.
+8. El archivo final se guarda como:
+   ```text
+   <carpeta_compartida>/<hash>
+   ```
+
+Se guarda con el hash como nombre porque `request <S> <H>` no incluye nombre de archivo.
+
+## Protocolo resumido
+
+Cliente a servidor:
+
+```text
+REGISTER <puerto_transferencia> <cantidad_archivos>
+FILE <tamano> <hash> <nombre>
+END
+FIND <nombre>
+LOOKUP <tamano> <hash>
+```
+
+Servidor a cliente:
+
+```text
+OK <texto>
+ERROR <texto>
+PEERS <cantidad>
+PEER <ip> <puerto>
+NEIGHBORS <cantidad>
+NEIGHBOR <ip> <puerto>
+END
+```
+
+Cliente a cliente:
+
+```text
+GET <tamano> <hash> <inicio> <largo>
+DATA <largo>
+<bytes>
+ERROR <texto>
+DSEARCH <id_consulta> <ip_origen> <puerto_origen> <ttl> <termino>
+DRESULT <id_consulta> <tamano> <hash> <nombre> <ip_dueno> <puerto_dueno>
+```
+
+## Pruebas automaticas
+
+Ejecutar todo:
 
 ```bash
 make test
 ```
 
-Current test targets:
+Incluye:
 
-- `make test-hash`
-  - Builds `tests/test_hash.c` with `server/hash.c`.
-  - Verifies same file contents produce the same hash even with different names.
-  - Verifies different contents produce a different hash.
-- `make test-server`
-  - Builds `bin/server`.
-  - Starts the server on localhost.
-  - Registers one file through the socket protocol.
-  - Verifies `FIND` returns the registering peer.
-  - Verifies `LOOKUP` returns the registering peer by size and hash.
-- `make test-client`
-  - Builds `bin/server` and `bin/client`.
-  - Starts the server on localhost.
-  - Runs the client against a temporary shared folder.
-  - Verifies the client registers two files.
-  - Starts a second client with the first client as its neighbor.
-  - Verifies `find -d` returns matching peer and file metadata.
-  - Verifies `find -d` reports a missing file cleanly.
-  - Verifies forwarded `DSEARCH` messages have a decremented TTL.
-  - Verifies searches with an exhausted TTL are not forwarded.
-  - Verifies duplicate query IDs are suppressed.
-  - Verifies expired seen-query entries can be accepted again.
-  - Sends `find -s` through the client console and verifies a matching peer is printed.
-  - Starts six real clients with scripted neighbor relationships.
-  - Verifies a file is discovered beyond the originator's immediate neighbor.
-  - Verifies `DRESULT` is sent directly to the originator with complete owner and file metadata.
-  - Verifies a duplicate query is suppressed in a looped client topology.
-  - Verifies TTL exhaustion prevents discovery of an owner beyond the forwarding boundary.
-  - Sends `find -s` for a missing file and verifies no-match reporting.
-  - Sends `request <S> <H>` and verifies candidate peers are printed.
-  - Verifies `request <S> <H>` downloads from one candidate peer into `<shared_folder>/<hash>`.
-  - Verifies an existing matching downloaded file is reused instead of overwritten.
-  - Verifies segmented downloads fetch ranges from multiple peers and reassemble the original file.
-  - Verifies a failed segmented peer can be retried against an available peer.
-  - Sends `request` for missing metadata and verifies no-match reporting.
-  - Verifies unavailable peers and failed transfers report failure without leaving output or `.part` files.
-  - Sends `GET` directly to the client's transfer port and verifies a byte range is returned.
-  - Verifies the server can find one of those files afterward.
-  - Verifies a missing shared folder does not crash the client and registers zero files.
+- prueba de hash propio
+- registro y busqueda en servidor
+- registro de cliente real
+- `find -s`
+- `find -d`
+- TTL y descarte de duplicados
+- descarga por `request`
+- descarga segmentada
+- reintento cuando un par falla
+- manejo de pares caidos
+- verificacion de rangos `GET`
+- prueba con seis clientes reales en una topologia con ciclos
 
-The server test binds a local TCP port. If a sandbox blocks listening sockets, run it in a normal terminal or allow the test command to bind localhost.
+Tambien se pueden correr por separado:
 
-## Repository Layout
-
-```text
-.
-├── client/        # Client startup, console, and transfer code
-├── distributed/   # Flood search, neighbors, TTL, and seen-query tracking
-├── docs/          # Course documentation in LaTeX
-├── protocol/      # Shared socket protocol constants and structs
-├── server/        # P2P server, metadata, and custom hash
-└── tests/         # C tests and shell harnesses
+```bash
+make test-hash
+make test-server
+make test-client
 ```
 
-## Notes For Future Agents
+Las pruebas abren puertos locales. Si el ambiente bloquea sockets locales, correrlas en una terminal normal de Linux.
 
-- Start by reading this file, `protocol/protocol.h`, and `Makefile`.
-- Check `git status --short` before editing.
-- Work one component at a time.
-- Keep behavior covered by `make test` as each component becomes available.
-- Do not replace C code with C++ or external dependencies.
-- Do not remove existing user changes unless explicitly asked.
+## Guia manual para demostrar que funciona
+
+### 1. Preparar carpetas
+
+```bash
+mkdir -p /tmp/p2p-a /tmp/p2p-b /tmp/p2p-c
+printf 'hola desde a\n' > /tmp/p2p-a/hola.txt
+printf 'otro archivo\n' > /tmp/p2p-b/otro.txt
+```
+
+### 2. Compilar
+
+```bash
+make
+```
+
+### 3. Levantar servidor
+
+Terminal 1:
+
+```bash
+./bin/server 39090
+```
+
+### 4. Levantar clientes
+
+Terminal 2:
+
+```bash
+./bin/client 127.0.0.1 39090 41001 /tmp/p2p-a
+```
+
+Terminal 3:
+
+```bash
+./bin/client 127.0.0.1 39090 41002 /tmp/p2p-b
+```
+
+Terminal 4:
+
+```bash
+./bin/client 127.0.0.1 39090 41003 /tmp/p2p-c
+```
+
+### 5. Ver archivos registrados
+
+En el cliente de `/tmp/p2p-a`:
+
+```text
+archivos
+```
+
+Copiar el tamano y hash de `hola.txt`.
+
+### 6. Probar busqueda centralizada
+
+En cualquier cliente:
+
+```text
+find -s hola.txt
+```
+
+Debe mostrar el IP y puerto del cliente que tiene `hola.txt`.
+
+### 7. Probar busqueda distribuida
+
+En un cliente que tenga vecinos:
+
+```text
+vecinos
+find -d hola.txt
+```
+
+Debe mostrar resultados si el archivo esta en algun vecino alcanzable por TTL.
+
+### 8. Probar descarga
+
+Usar el tamano y hash que salieron con `archivos`:
+
+```text
+request <tamano> <hash>
+```
+
+El archivo descargado queda en la carpeta compartida del cliente que pidio la descarga, con el hash como nombre.
+
+Ejemplo para revisar:
+
+```bash
+ls -l /tmp/p2p-c
+cat /tmp/p2p-c/<hash>
+```
+
+### 9. Probar resistencia con carpeta faltante
+
+```bash
+./bin/client 127.0.0.1 39090 41004 /tmp/no-existe
+```
+
+El cliente debe avisar que no puede abrir la carpeta, registrar cero archivos y no caerse.
+
+## Estructura
+
+```text
+client/        cliente, consola y transferencia
+distributed/   busqueda distribuida, TTL y cache de consultas
+protocol/      constantes y mensajes compartidos
+server/        servidor, metadatos y hash propio
+tests/         pruebas automaticas
+docs/          documentacion LaTeX del curso
+```

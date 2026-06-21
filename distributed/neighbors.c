@@ -1,1 +1,1 @@
-/* neighbors.c - Manejo de lista de vecinos */
+/* vecinos.c - Manejo de lista de vecinos */

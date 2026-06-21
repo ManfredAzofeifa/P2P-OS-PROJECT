@@ -31,10 +31,10 @@
  *   OK [text]
  *   ERROR <text>
  *   PEERS <count>
- *   PEER <ip> <port>
+ *   PEER <ip> <puerto>
  *   END
  *   NEIGHBORS <count>
- *   NEIGHBOR <ip> <port>
+ *   NEIGHBOR <ip> <puerto>
  *
  * Client -> Client transfer
  *   GET <size> <hash> <offset> <length>
@@ -51,7 +51,7 @@
 
 typedef struct {
     char ip[46];
-    uint16_t port;
-} p2p_endpoint_t;
+    uint16_t puerto;
+} punto_red_p2p_t;
 
 #endif

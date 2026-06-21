@@ -10,7 +10,7 @@ trap 'kill "$SERVER_PID" 2>/dev/null || true; rm -f "$SERVER_LOG"' EXIT
 SERVER_PID=$!
 
 for _ in $(seq 1 30); do
-    if grep -q "listening" "$SERVER_LOG"; then
+    if grep -q "escuchando" "$SERVER_LOG"; then
         break
     fi
     sleep 0.1
@@ -24,7 +24,7 @@ fi
 exec 3<>"/dev/tcp/127.0.0.1/$PORT"
 printf 'REGISTER 41001 1\nFILE 12 abcdefabcdefabcdefabcdefabcdefab sample.txt\nEND\n' >&3
 read -r line <&3
-[ "$line" = "OK registered 1 files" ]
+[ "$line" = "OK registrado 1 archivos" ]
 read -r line <&3
 [ "$line" = "NEIGHBORS 0" ]
 read -r line <&3
@@ -54,4 +54,4 @@ read -r line <&5
 exec 5<&-
 exec 5>&-
 
-printf 'server protocol ok\n'
+printf 'protocolo del servidor ok\n'

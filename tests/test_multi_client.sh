@@ -2,14 +2,15 @@
 set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SERVER_PORT="${P2P_TEST_TOPOLOGY_SERVER_PORT:-39120}"
-A_PORT="${P2P_TEST_TOPOLOGY_A_PORT:-42101}"
-B_PORT="${P2P_TEST_TOPOLOGY_B_PORT:-42102}"
-C_PORT="${P2P_TEST_TOPOLOGY_C_PORT:-42103}"
-D_PORT="${P2P_TEST_TOPOLOGY_D_PORT:-42104}"
-E_PORT="${P2P_TEST_TOPOLOGY_E_PORT:-42105}"
-F_PORT="${P2P_TEST_TOPOLOGY_F_PORT:-42106}"
-ORIGIN_PORT="${P2P_TEST_QUERY_ORIGIN_PORT:-42120}"
+BASE_PORT=$((45000 + ($$ % 1000)))
+SERVER_PORT="${P2P_TEST_TOPOLOGY_SERVER_PORT:-$BASE_PORT}"
+A_PORT="${P2P_TEST_TOPOLOGY_A_PORT:-$((BASE_PORT + 1))}"
+B_PORT="${P2P_TEST_TOPOLOGY_B_PORT:-$((BASE_PORT + 2))}"
+C_PORT="${P2P_TEST_TOPOLOGY_C_PORT:-$((BASE_PORT + 3))}"
+D_PORT="${P2P_TEST_TOPOLOGY_D_PORT:-$((BASE_PORT + 4))}"
+E_PORT="${P2P_TEST_TOPOLOGY_E_PORT:-$((BASE_PORT + 5))}"
+F_PORT="${P2P_TEST_TOPOLOGY_F_PORT:-$((BASE_PORT + 6))}"
+ORIGIN_PORT="${P2P_TEST_QUERY_ORIGIN_PORT:-$((BASE_PORT + 20))}"
 TMP_DIR="$(mktemp -d)"
 TOPOLOGY_BIN="$TMP_DIR/topology_server"
 QUERY_BIN="$TMP_DIR/query_origin"
@@ -44,12 +45,12 @@ gcc -Wall -Wextra -I"$ROOT_DIR" -o "$HASH_BIN" \
     "$D_PORT" "$E_PORT" "$F_PORT" > "$TOPOLOGY_LOG" 2>&1 &
 TOPOLOGY_PID=$!
 for _ in $(seq 1 30); do
-    if grep -q "topology server listening" "$TOPOLOGY_LOG"; then
+    if grep -q "servidor de topologia escuchando" "$TOPOLOGY_LOG"; then
         break
     fi
     sleep 0.1
 done
-grep -q "topology server listening" "$TOPOLOGY_LOG"
+grep -q "servidor de topologia escuchando" "$TOPOLOGY_LOG"
 
 start_client() {
     local name="$1"
@@ -78,7 +79,7 @@ start_client f "$F_PORT"
 for _ in $(seq 1 50); do
     ready=1
     for client in a b c d e f; do
-        if ! grep -q "transfer server listening" "$TMP_DIR/$client.log"; then
+        if ! grep -q "servidor de transferencia escuchando" "$TMP_DIR/$client.log"; then
             ready=0
         fi
     done
@@ -88,15 +89,15 @@ for _ in $(seq 1 50); do
     sleep 0.1
 done
 for client in a b c d e f; do
-    grep -q "transfer server listening" "$TMP_DIR/$client.log"
+    grep -q "servidor de transferencia escuchando" "$TMP_DIR/$client.log"
 done
 
-grep -q "received 1 neighbors" "$TMP_DIR/a.log"
-grep -q "received 1 neighbors" "$TMP_DIR/b.log"
-grep -q "received 2 neighbors" "$TMP_DIR/c.log"
-grep -q "received 1 neighbors" "$TMP_DIR/d.log"
-grep -q "received 1 neighbors" "$TMP_DIR/e.log"
-grep -q "received 0 neighbors" "$TMP_DIR/f.log"
+grep -q "recibidos 1 vecinos" "$TMP_DIR/a.log"
+grep -q "recibidos 1 vecinos" "$TMP_DIR/b.log"
+grep -q "recibidos 2 vecinos" "$TMP_DIR/c.log"
+grep -q "recibidos 1 vecinos" "$TMP_DIR/d.log"
+grep -q "recibidos 1 vecinos" "$TMP_DIR/e.log"
+grep -q "recibidos 0 vecinos" "$TMP_DIR/f.log"
 
 NEAR_SIZE="$(wc -c < "$TMP_DIR/c/near.txt")"
 NEAR_HASH="$("$HASH_BIN" "$TMP_DIR/c/near.txt")"
@@ -105,18 +106,18 @@ NEAR_HASH="$("$HASH_BIN" "$TMP_DIR/c/near.txt")"
     > "$TMP_DIR/query.log"
 grep -q "DRESULT 777777 $NEAR_SIZE $NEAR_HASH near.txt 127.0.0.1 $C_PORT" \
     "$TMP_DIR/query.log"
-grep -q "^results 1$" "$TMP_DIR/query.log"
+grep -q "^resultados 1$" "$TMP_DIR/query.log"
 
 printf 'find -d near.txt\nfind -d far.txt\n' >&"$A_FD"
 for _ in $(seq 1 40); do
-    if grep -q "no distributed matches for far.txt" "$TMP_DIR/a.log"; then
+    if grep -q "no hay resultados distribuidos para far.txt" "$TMP_DIR/a.log"; then
         break
     fi
     sleep 0.1
 done
 
-grep -q "distributed matches for near.txt: 1" "$TMP_DIR/a.log"
+grep -q "resultados distribuidos para near.txt: 1" "$TMP_DIR/a.log"
 grep -q "$NEAR_SIZE $NEAR_HASH near.txt 127.0.0.1 $C_PORT" "$TMP_DIR/a.log"
-grep -q "no distributed matches for far.txt" "$TMP_DIR/a.log"
+grep -q "no hay resultados distribuidos para far.txt" "$TMP_DIR/a.log"
 
-printf 'multi-client integration ok\n'
+printf 'integracion multi-cliente ok\n'

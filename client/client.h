@@ -10,28 +10,28 @@
 #define CLIENT_MAX_LOCAL_FILES 1024
 
 typedef struct {
-    char server_ip[46];
-    char local_ip[46];
-    uint16_t server_port;
-    uint16_t transfer_port;
-    char shared_folder[P2P_MAX_PATH];
-    p2p_file_metadata_t files[CLIENT_MAX_LOCAL_FILES];
-    size_t file_count;
-    p2p_endpoint_t neighbors[P2P_DEFAULT_NEIGHBORS];
-    size_t neighbor_count;
-} p2p_client_context_t;
+    char ip_servidor[46];
+    char ip_local[46];
+    uint16_t puerto_servidor;
+    uint16_t puerto_transferencia;
+    char carpeta_compartida[P2P_MAX_PATH];
+    metadato_archivo_p2p_t archivos[CLIENT_MAX_LOCAL_FILES];
+    size_t cantidad_archivos;
+    punto_red_p2p_t vecinos[P2P_DEFAULT_NEIGHBORS];
+    size_t cantidad_vecinos;
+} contexto_cliente_p2p_t;
 
-int client_find_on_server(const p2p_client_context_t *context,
-                          const char *name,
-                          p2p_endpoint_t *peers,
-                          size_t max_peers,
-                          size_t *peer_count);
-int client_lookup_on_server(const p2p_client_context_t *context,
-                            uint64_t size,
+int buscar_en_servidor(const contexto_cliente_p2p_t *contexto,
+                          const char *nombre,
+                          punto_red_p2p_t *pares,
+                          size_t max_pares,
+                          size_t *cantidad_pares);
+int buscar_hash_en_servidor(const contexto_cliente_p2p_t *contexto,
+                            uint64_t tamano,
                             const char *hash,
-                            p2p_endpoint_t *peers,
-                            size_t max_peers,
-                            size_t *peer_count);
-void client_run_console(p2p_client_context_t *context);
+                            punto_red_p2p_t *pares,
+                            size_t max_pares,
+                            size_t *cantidad_pares);
+void correr_consola_cliente(contexto_cliente_p2p_t *contexto);
 
 #endif

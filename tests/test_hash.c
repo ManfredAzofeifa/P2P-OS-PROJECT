@@ -9,19 +9,19 @@ int main(int argc, char **argv) {
     char changed[P2P_HASH_STR_LEN];
 
     if (argc != 4) {
-        fprintf(stderr, "usage: %s <same-content-a> <same-content-b> <different-content>\n", argv[0]);
+        fprintf(stderr, "uso: %s <same-content-a> <same-content-b> <different-content>\n", argv[0]);
         return 2;
     }
 
-    if (p2p_hash_file(argv[1], first) != 0 ||
-        p2p_hash_file(argv[2], renamed) != 0 ||
-        p2p_hash_file(argv[3], changed) != 0) {
-        perror("p2p_hash_file");
+    if (calcular_hash_archivo(argv[1], first) != 0 ||
+        calcular_hash_archivo(argv[2], renamed) != 0 ||
+        calcular_hash_archivo(argv[3], changed) != 0) {
+        perror("calcular_hash_archivo");
         return 1;
     }
 
     if (strlen(first) != P2P_HASH_HEX_LEN) {
-        fprintf(stderr, "hash length mismatch: %zu\n", strlen(first));
+        fprintf(stderr, "hash largo mismatch: %zu\n", strlen(first));
         return 1;
     }
 

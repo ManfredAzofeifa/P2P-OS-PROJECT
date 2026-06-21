@@ -13,19 +13,19 @@
 
 #define RANGE_BUFFER_SIZE 4096
 
-static void trim_newline(char *line) {
-    size_t len = strlen(line);
+static void limpiar_salto_linea(char *linea) {
+    size_t len = strlen(linea);
 
-    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
-        line[len - 1] = '\0';
+    while (len > 0 && (linea[len - 1] == '\n' || linea[len - 1] == '\r')) {
+        linea[len - 1] = '\0';
         len--;
     }
 }
 
-static int read_line(int fd, char *buffer, size_t size) {
+static int leer_linea(int fd, char *buffer, size_t tamano) {
     size_t used = 0;
 
-    while (used + 1 < size) {
+    while (used + 1 < tamano) {
         char ch;
         ssize_t nread = recv(fd, &ch, 1, 0);
 
@@ -45,12 +45,12 @@ static int read_line(int fd, char *buffer, size_t size) {
     }
 
     buffer[used] = '\0';
-    trim_newline(buffer);
+    limpiar_salto_linea(buffer);
     return used > 0 ? 1 : 0;
 }
 
-static int write_all(int fd, const void *data, size_t len) {
-    const char *bytes = data;
+static int escribir_todo(int fd, const void *datos, size_t len) {
+    const char *bytes = datos;
     size_t total = 0;
 
     while (total < len) {
@@ -66,63 +66,63 @@ static int write_all(int fd, const void *data, size_t len) {
     return 0;
 }
 
-static int write_text(int fd, const char *text) {
-    return write_all(fd, text, strlen(text));
+static int escribir_texto(int fd, const char *texto) {
+    return escribir_todo(fd, texto, strlen(texto));
 }
 
-static int serve_range(int fd, const char *path) {
-    char line[P2P_MAX_LINE];
+static int serve_range(int fd, const char *ruta) {
+    char linea[P2P_MAX_LINE];
     char header[P2P_MAX_LINE];
     char hash[P2P_HASH_STR_LEN];
-    unsigned long long size;
-    unsigned long long offset;
-    unsigned long long length;
+    unsigned long long tamano;
+    unsigned long long inicio;
+    unsigned long long largo;
     unsigned char buffer[RANGE_BUFFER_SIZE];
     struct stat st;
-    uint64_t remaining;
+    uint64_t restante;
     FILE *input;
 
-    if (read_line(fd, line, sizeof(line)) <= 0) {
+    if (leer_linea(fd, linea, sizeof(linea)) <= 0) {
         return -1;
     }
-    if (sscanf(line, "GET %llu %32s %llu %llu", &size, hash, &offset, &length) != 4 ||
+    if (sscanf(linea, "GET %llu %32s %llu %llu", &tamano, hash, &inicio, &largo) != 4 ||
         strlen(hash) != P2P_HASH_HEX_LEN) {
-        return write_text(fd, "ERROR invalid GET\n");
+        return escribir_texto(fd, "ERROR GET invalido\n");
     }
-    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || (uint64_t)st.st_size != (uint64_t)size ||
-        (uint64_t)offset > (uint64_t)size || (uint64_t)length > (uint64_t)size - (uint64_t)offset) {
-        return write_text(fd, "ERROR invalid range\n");
+    if (stat(ruta, &st) != 0 || !S_ISREG(st.st_mode) || (uint64_t)st.st_size != (uint64_t)tamano ||
+        (uint64_t)inicio > (uint64_t)tamano || (uint64_t)largo > (uint64_t)tamano - (uint64_t)inicio) {
+        return escribir_texto(fd, "ERROR rango invalido\n");
     }
 
-    input = fopen(path, "rb");
+    input = fopen(ruta, "rb");
     if (input == NULL) {
-        return write_text(fd, "ERROR file unavailable\n");
+        return escribir_texto(fd, "ERROR archivo no disponible\n");
     }
-    if (fseeko(input, (off_t)offset, SEEK_SET) != 0) {
+    if (fseeko(input, (off_t)inicio, SEEK_SET) != 0) {
         fclose(input);
-        return write_text(fd, "ERROR seek failed\n");
+        return escribir_texto(fd, "ERROR fallo al moverse en archivo\n");
     }
 
-    snprintf(header, sizeof(header), "DATA %llu\n", length);
-    if (write_text(fd, header) != 0) {
+    snprintf(header, sizeof(header), "DATA %llu\n", largo);
+    if (escribir_texto(fd, header) != 0) {
         fclose(input);
         return -1;
     }
 
-    remaining = (uint64_t)length;
-    while (remaining > 0) {
-        size_t chunk = remaining > sizeof(buffer) ? sizeof(buffer) : (size_t)remaining;
+    restante = (uint64_t)largo;
+    while (restante > 0) {
+        size_t chunk = restante > sizeof(buffer) ? sizeof(buffer) : (size_t)restante;
         size_t nread = fread(buffer, 1, chunk, input);
 
         if (nread == 0) {
             fclose(input);
             return -1;
         }
-        if (write_all(fd, buffer, nread) != 0) {
+        if (escribir_todo(fd, buffer, nread) != 0) {
             fclose(input);
             return -1;
         }
-        remaining -= nread;
+        restante -= nread;
     }
 
     fclose(input);
@@ -130,7 +130,7 @@ static int serve_range(int fd, const char *path) {
 }
 
 int main(int argc, char **argv) {
-    unsigned long port;
+    unsigned long puerto;
     unsigned long max_requests;
     char *end = NULL;
     int listen_fd;
@@ -138,19 +138,19 @@ int main(int argc, char **argv) {
     struct sockaddr_in addr;
 
     if (argc != 4) {
-        fprintf(stderr, "usage: %s <port> <file> <max_requests>\n", argv[0]);
+        fprintf(stderr, "uso: %s <puerto> <archivo> <max_requests>\n", argv[0]);
         return 2;
     }
 
-    port = strtoul(argv[1], &end, 10);
-    if (*argv[1] == '\0' || *end != '\0' || port == 0 || port > 65535UL) {
-        fprintf(stderr, "invalid port\n");
+    puerto = strtoul(argv[1], &end, 10);
+    if (*argv[1] == '\0' || *end != '\0' || puerto == 0 || puerto > 65535UL) {
+        fprintf(stderr, "puerto invalido\n");
         return 2;
     }
     end = NULL;
     max_requests = strtoul(argv[3], &end, 10);
     if (*argv[3] == '\0' || *end != '\0' || max_requests == 0) {
-        fprintf(stderr, "invalid max_requests\n");
+        fprintf(stderr, "max_requests invalido\n");
         return 2;
     }
 
@@ -164,7 +164,7 @@ int main(int argc, char **argv) {
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = htons((uint16_t)port);
+    addr.sin_port = htons((uint16_t)puerto);
 
     if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
         listen(listen_fd, 8) != 0) {
@@ -173,7 +173,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    printf("range peer listening on port %lu\n", port);
+    printf("par de rangos escuchando en puerto %lu\n", puerto);
     fflush(stdout);
 
     for (unsigned long i = 0; i < max_requests; i++) {

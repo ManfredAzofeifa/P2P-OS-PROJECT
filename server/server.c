@@ -1,4 +1,22 @@
-/* server.c - Servidor P2P principal */
+/*
+ * servidor.c - Servidor P2P principal.
+ *
+ * Documentacion de funciones:
+ * limpiar_salto_linea: limpia mensajes; recibe una linea; ayuda al protocolo textual.
+ * leer_linea: lee una linea de socket; recibe fd, buffer y tamano; recibe REGISTER, FIND y LOOKUP.
+ * escribir_todo: envia texto completo; recibe fd y texto; responde a clientes.
+ * punto_desde_sockaddr: obtiene IP/puerto del cliente; recibe sockaddr y puerto; guarda duenos de archivos.
+ * mismo_punto: compara IP/puerto; recibe dos puntos; evita duplicados.
+ * quitar_archivos_del_dueno: borra registros viejos; recibe dueno; mantiene metadatos actualizados.
+ * guardar_cliente_reciente: actualiza clientes recientes; recibe punto; permite devolver vecinos.
+ * juntar_vecinos: escoge vecinos recientes; recibe cliente actual, salida y maximo; apoya busqueda distribuida.
+ * atender_registro: procesa REGISTER/FILE/END; recibe socket, direccion y linea; guarda hash, tamano y dueno.
+ * atender_find: procesa FIND; recibe socket y linea; resuelve find -s.
+ * atender_lookup: procesa LOOKUP; recibe socket y linea; resuelve request por tamano/hash.
+ * hilo_cliente: atiende una conexion; recibe datos del socket; permite varios clientes.
+ * crear_socket_escucha: abre socket TCP; recibe puerto; levanta el servidor central.
+ * main: inicia el servidor; recibe puerto por argv; ejecuta el servidor P2P.
+ */
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -25,34 +43,34 @@ typedef struct {
     struct sockaddr_storage addr;
 } client_connection_t;
 
-static p2p_file_metadata_t g_files[MAX_REGISTERED_FILES];
-static size_t g_file_count = 0;
-static p2p_endpoint_t g_clients[MAX_REGISTERED_CLIENTS];
-static size_t g_client_count = 0;
-static pthread_mutex_t g_registry_mutex = PTHREAD_MUTEX_INITIALIZER;
+static metadato_archivo_p2p_t archivos_registrados[MAX_REGISTERED_FILES];
+static size_t cantidad_archivos_registrados = 0;
+static punto_red_p2p_t clientes_recientes[MAX_REGISTERED_CLIENTS];
+static size_t cantidad_clientes_recientes = 0;
+static pthread_mutex_t candado_registro = PTHREAD_MUTEX_INITIALIZER;
 
-static void trim_newline(char *line) {
+static void limpiar_salto_linea(char *linea) {
     size_t len;
 
-    if (line == NULL) {
+    if (linea == NULL) {
         return;
     }
 
-    len = strlen(line);
-    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
-        line[len - 1] = '\0';
+    len = strlen(linea);
+    while (len > 0 && (linea[len - 1] == '\n' || linea[len - 1] == '\r')) {
+        linea[len - 1] = '\0';
         len--;
     }
 }
 
-static int read_line(int fd, char *buffer, size_t size) {
+static int leer_linea(int fd, char *buffer, size_t tamano) {
     size_t used = 0;
 
-    if (buffer == NULL || size == 0) {
+    if (buffer == NULL || tamano == 0) {
         return -1;
     }
 
-    while (used + 1 < size) {
+    while (used + 1 < tamano) {
         char ch;
         ssize_t nread = recv(fd, &ch, 1, 0);
 
@@ -73,16 +91,16 @@ static int read_line(int fd, char *buffer, size_t size) {
     }
 
     buffer[used] = '\0';
-    trim_newline(buffer);
+    limpiar_salto_linea(buffer);
     return used > 0 ? 1 : 0;
 }
 
-static int write_all(int fd, const char *text) {
+static int escribir_todo(int fd, const char *texto) {
     size_t total = 0;
-    size_t len = strlen(text);
+    size_t len = strlen(texto);
 
     while (total < len) {
-        ssize_t nwritten = send(fd, text + total, len - total, 0);
+        ssize_t nwritten = send(fd, texto + total, len - total, 0);
 
         if (nwritten < 0) {
             if (errno == EINTR) {
@@ -96,13 +114,13 @@ static int write_all(int fd, const char *text) {
     return 0;
 }
 
-static void endpoint_from_sockaddr(const struct sockaddr_storage *addr,
-                                   uint16_t transfer_port,
-                                   p2p_endpoint_t *endpoint) {
+static void punto_desde_sockaddr(const struct sockaddr_storage *addr,
+                                   uint16_t puerto_transferencia,
+                                   punto_red_p2p_t *endpoint) {
     const void *src = NULL;
 
     memset(endpoint, 0, sizeof(*endpoint));
-    endpoint->port = transfer_port;
+    endpoint->puerto = puerto_transferencia;
 
     if (addr->ss_family == AF_INET) {
         src = &((const struct sockaddr_in *)addr)->sin_addr;
@@ -112,229 +130,229 @@ static void endpoint_from_sockaddr(const struct sockaddr_storage *addr,
 
     if (src == NULL ||
         inet_ntop(addr->ss_family, src, endpoint->ip, sizeof(endpoint->ip)) == NULL) {
-        snprintf(endpoint->ip, sizeof(endpoint->ip), "unknown");
+        snprintf(endpoint->ip, sizeof(endpoint->ip), "desconocido");
     }
 }
 
-static int same_endpoint(const p2p_endpoint_t *a, const p2p_endpoint_t *b) {
-    return a->port == b->port && strcmp(a->ip, b->ip) == 0;
+static int mismo_punto(const punto_red_p2p_t *a, const punto_red_p2p_t *b) {
+    return a->puerto == b->puerto && strcmp(a->ip, b->ip) == 0;
 }
 
-static void remove_files_for_owner(const p2p_endpoint_t *owner) {
+static void quitar_archivos_del_dueno(const punto_red_p2p_t *dueno) {
     size_t i = 0;
 
-    while (i < g_file_count) {
-        if (same_endpoint(&g_files[i].owner, owner)) {
-            g_files[i] = g_files[g_file_count - 1];
-            g_file_count--;
+    while (i < cantidad_archivos_registrados) {
+        if (mismo_punto(&archivos_registrados[i].dueno, dueno)) {
+            archivos_registrados[i] = archivos_registrados[cantidad_archivos_registrados - 1];
+            cantidad_archivos_registrados--;
         } else {
             i++;
         }
     }
 }
 
-static void upsert_recent_client(const p2p_endpoint_t *endpoint) {
+static void guardar_cliente_reciente(const punto_red_p2p_t *endpoint) {
     size_t i;
 
-    for (i = 0; i < g_client_count; i++) {
-        if (same_endpoint(&g_clients[i], endpoint)) {
+    for (i = 0; i < cantidad_clientes_recientes; i++) {
+        if (mismo_punto(&clientes_recientes[i], endpoint)) {
             size_t j;
-            p2p_endpoint_t existing = g_clients[i];
+            punto_red_p2p_t existente = clientes_recientes[i];
 
-            for (j = i; j + 1 < g_client_count; j++) {
-                g_clients[j] = g_clients[j + 1];
+            for (j = i; j + 1 < cantidad_clientes_recientes; j++) {
+                clientes_recientes[j] = clientes_recientes[j + 1];
             }
-            g_clients[g_client_count - 1] = existing;
+            clientes_recientes[cantidad_clientes_recientes - 1] = existente;
             return;
         }
     }
 
-    if (g_client_count < MAX_REGISTERED_CLIENTS) {
-        g_clients[g_client_count++] = *endpoint;
+    if (cantidad_clientes_recientes < MAX_REGISTERED_CLIENTS) {
+        clientes_recientes[cantidad_clientes_recientes++] = *endpoint;
         return;
     }
 
-    memmove(&g_clients[0], &g_clients[1], sizeof(g_clients[0]) * (MAX_REGISTERED_CLIENTS - 1));
-    g_clients[MAX_REGISTERED_CLIENTS - 1] = *endpoint;
+    memmove(&clientes_recientes[0], &clientes_recientes[1], sizeof(clientes_recientes[0]) * (MAX_REGISTERED_CLIENTS - 1));
+    clientes_recientes[MAX_REGISTERED_CLIENTS - 1] = *endpoint;
 }
 
-static size_t collect_neighbors(const p2p_endpoint_t *self,
-                                p2p_endpoint_t *neighbors,
-                                size_t max_neighbors) {
+static size_t juntar_vecinos(const punto_red_p2p_t *self,
+                                punto_red_p2p_t *vecinos,
+                                size_t max_vecinos) {
     size_t count = 0;
-    size_t remaining = g_client_count;
+    size_t restante = cantidad_clientes_recientes;
 
-    while (remaining > 0 && count < max_neighbors) {
-        const p2p_endpoint_t *candidate = &g_clients[remaining - 1];
-        if (!same_endpoint(candidate, self)) {
-            neighbors[count++] = *candidate;
+    while (restante > 0 && count < max_vecinos) {
+        const punto_red_p2p_t *candidato = &clientes_recientes[restante - 1];
+        if (!mismo_punto(candidato, self)) {
+            vecinos[count++] = *candidato;
         }
-        remaining--;
+        restante--;
     }
 
     return count;
 }
 
-static void handle_register(int fd,
+static void atender_registro(int fd,
                             const struct sockaddr_storage *addr,
-                            const char *line) {
-    unsigned int transfer_port;
-    unsigned int expected_files;
-    p2p_endpoint_t owner;
-    p2p_file_metadata_t pending[MAX_REGISTERED_FILES];
-    size_t pending_count = 0;
-    p2p_endpoint_t neighbors[P2P_DEFAULT_NEIGHBORS];
-    size_t neighbor_count;
-    char response[P2P_MAX_LINE];
+                            const char *linea) {
+    unsigned int puerto_transferencia;
+    unsigned int archivos_esperados;
+    punto_red_p2p_t dueno;
+    metadato_archivo_p2p_t pendientes[MAX_REGISTERED_FILES];
+    size_t cantidad_pendientes = 0;
+    punto_red_p2p_t vecinos[P2P_DEFAULT_NEIGHBORS];
+    size_t cantidad_vecinos;
+    char respuesta[P2P_MAX_LINE];
 
-    if (sscanf(line, "REGISTER %u %u", &transfer_port, &expected_files) != 2 ||
-        transfer_port > 65535U) {
-        write_all(fd, "ERROR invalid REGISTER\n");
+    if (sscanf(linea, "REGISTER %u %u", &puerto_transferencia, &archivos_esperados) != 2 ||
+        puerto_transferencia > 65535U) {
+        escribir_todo(fd, "ERROR REGISTER invalido\n");
         return;
     }
 
-    endpoint_from_sockaddr(addr, (uint16_t)transfer_port, &owner);
+    punto_desde_sockaddr(addr, (uint16_t)puerto_transferencia, &dueno);
 
-    while (pending_count < MAX_REGISTERED_FILES) {
+    while (cantidad_pendientes < MAX_REGISTERED_FILES) {
         char file_line[P2P_MAX_LINE];
-        int status = read_line(fd, file_line, sizeof(file_line));
-        unsigned long long size;
+        int estado = leer_linea(fd, file_line, sizeof(file_line));
+        unsigned long long tamano;
         char hash[P2P_HASH_STR_LEN];
-        char name[P2P_MAX_NAME];
+        char nombre[P2P_MAX_NAME];
 
-        if (status <= 0) {
-            write_all(fd, "ERROR incomplete REGISTER\n");
+        if (estado <= 0) {
+            escribir_todo(fd, "ERROR REGISTER incompleto\n");
             return;
         }
         if (strcmp(file_line, "END") == 0) {
             break;
         }
 
-        if (sscanf(file_line, "FILE %llu %32s %255[^\n]", &size, hash, name) != 3) {
-            write_all(fd, "ERROR invalid FILE\n");
+        if (sscanf(file_line, "FILE %llu %32s %255[^\n]", &tamano, hash, nombre) != 3) {
+            escribir_todo(fd, "ERROR FILE invalido\n");
             return;
         }
 
-        memset(&pending[pending_count], 0, sizeof(pending[pending_count]));
-        snprintf(pending[pending_count].name, sizeof(pending[pending_count].name), "%s", name);
-        snprintf(pending[pending_count].hash, sizeof(pending[pending_count].hash), "%s", hash);
-        pending[pending_count].size = (uint64_t)size;
-        pending[pending_count].owner = owner;
-        pending_count++;
+        memset(&pendientes[cantidad_pendientes], 0, sizeof(pendientes[cantidad_pendientes]));
+        snprintf(pendientes[cantidad_pendientes].nombre, sizeof(pendientes[cantidad_pendientes].nombre), "%s", nombre);
+        snprintf(pendientes[cantidad_pendientes].hash, sizeof(pendientes[cantidad_pendientes].hash), "%s", hash);
+        pendientes[cantidad_pendientes].tamano = (uint64_t)tamano;
+        pendientes[cantidad_pendientes].dueno = dueno;
+        cantidad_pendientes++;
     }
 
-    pthread_mutex_lock(&g_registry_mutex);
-    neighbor_count = collect_neighbors(&owner, neighbors, P2P_DEFAULT_NEIGHBORS);
-    remove_files_for_owner(&owner);
-    upsert_recent_client(&owner);
+    pthread_mutex_lock(&candado_registro);
+    cantidad_vecinos = juntar_vecinos(&dueno, vecinos, P2P_DEFAULT_NEIGHBORS);
+    quitar_archivos_del_dueno(&dueno);
+    guardar_cliente_reciente(&dueno);
 
-    for (size_t i = 0; i < pending_count && g_file_count < MAX_REGISTERED_FILES; i++) {
-        g_files[g_file_count++] = pending[i];
+    for (size_t i = 0; i < cantidad_pendientes && cantidad_archivos_registrados < MAX_REGISTERED_FILES; i++) {
+        archivos_registrados[cantidad_archivos_registrados++] = pendientes[i];
     }
-    pthread_mutex_unlock(&g_registry_mutex);
+    pthread_mutex_unlock(&candado_registro);
 
-    (void)expected_files;
+    (void)archivos_esperados;
 
-    snprintf(response, sizeof(response), "OK registered %zu files\n", pending_count);
-    write_all(fd, response);
-    snprintf(response, sizeof(response), "NEIGHBORS %zu\n", neighbor_count);
-    write_all(fd, response);
-    for (size_t i = 0; i < neighbor_count; i++) {
-        snprintf(response, sizeof(response), "NEIGHBOR %s %u\n",
-                 neighbors[i].ip, neighbors[i].port);
-        write_all(fd, response);
+    snprintf(respuesta, sizeof(respuesta), "OK registrado %zu archivos\n", cantidad_pendientes);
+    escribir_todo(fd, respuesta);
+    snprintf(respuesta, sizeof(respuesta), "NEIGHBORS %zu\n", cantidad_vecinos);
+    escribir_todo(fd, respuesta);
+    for (size_t i = 0; i < cantidad_vecinos; i++) {
+        snprintf(respuesta, sizeof(respuesta), "NEIGHBOR %s %u\n",
+                 vecinos[i].ip, vecinos[i].puerto);
+        escribir_todo(fd, respuesta);
     }
-    write_all(fd, "END\n");
+    escribir_todo(fd, "END\n");
 }
 
-static void handle_find(int fd, const char *line) {
-    char name[P2P_MAX_NAME];
-    p2p_endpoint_t peers[P2P_MAX_PEERS];
-    size_t peer_count = 0;
-    char response[P2P_MAX_LINE];
+static void atender_find(int fd, const char *linea) {
+    char nombre[P2P_MAX_NAME];
+    punto_red_p2p_t pares[P2P_MAX_PEERS];
+    size_t cantidad_pares = 0;
+    char respuesta[P2P_MAX_LINE];
 
-    if (sscanf(line, "FIND %255[^\n]", name) != 1) {
-        write_all(fd, "ERROR invalid FIND\n");
+    if (sscanf(linea, "FIND %255[^\n]", nombre) != 1) {
+        escribir_todo(fd, "ERROR FIND invalido\n");
         return;
     }
 
-    pthread_mutex_lock(&g_registry_mutex);
-    for (size_t i = 0; i < g_file_count && peer_count < P2P_MAX_PEERS; i++) {
-        if (strcmp(g_files[i].name, name) == 0) {
-            int duplicate = 0;
-            for (size_t j = 0; j < peer_count; j++) {
-                if (same_endpoint(&peers[j], &g_files[i].owner)) {
-                    duplicate = 1;
+    pthread_mutex_lock(&candado_registro);
+    for (size_t i = 0; i < cantidad_archivos_registrados && cantidad_pares < P2P_MAX_PEERS; i++) {
+        if (strcmp(archivos_registrados[i].nombre, nombre) == 0) {
+            int repetido = 0;
+            for (size_t j = 0; j < cantidad_pares; j++) {
+                if (mismo_punto(&pares[j], &archivos_registrados[i].dueno)) {
+                    repetido = 1;
                     break;
                 }
             }
-            if (!duplicate) {
-                peers[peer_count++] = g_files[i].owner;
+            if (!repetido) {
+                pares[cantidad_pares++] = archivos_registrados[i].dueno;
             }
         }
     }
-    pthread_mutex_unlock(&g_registry_mutex);
+    pthread_mutex_unlock(&candado_registro);
 
-    snprintf(response, sizeof(response), "PEERS %zu\n", peer_count);
-    write_all(fd, response);
-    for (size_t i = 0; i < peer_count; i++) {
-        snprintf(response, sizeof(response), "PEER %s %u\n", peers[i].ip, peers[i].port);
-        write_all(fd, response);
+    snprintf(respuesta, sizeof(respuesta), "PEERS %zu\n", cantidad_pares);
+    escribir_todo(fd, respuesta);
+    for (size_t i = 0; i < cantidad_pares; i++) {
+        snprintf(respuesta, sizeof(respuesta), "PEER %s %u\n", pares[i].ip, pares[i].puerto);
+        escribir_todo(fd, respuesta);
     }
-    write_all(fd, "END\n");
+    escribir_todo(fd, "END\n");
 }
 
-static void handle_lookup(int fd, const char *line) {
-    unsigned long long size;
+static void atender_lookup(int fd, const char *linea) {
+    unsigned long long tamano;
     char hash[P2P_HASH_STR_LEN];
-    p2p_endpoint_t peers[P2P_MAX_PEERS];
-    size_t peer_count = 0;
-    char response[P2P_MAX_LINE];
+    punto_red_p2p_t pares[P2P_MAX_PEERS];
+    size_t cantidad_pares = 0;
+    char respuesta[P2P_MAX_LINE];
 
-    if (sscanf(line, "LOOKUP %llu %32s", &size, hash) != 2) {
-        write_all(fd, "ERROR invalid LOOKUP\n");
+    if (sscanf(linea, "LOOKUP %llu %32s", &tamano, hash) != 2) {
+        escribir_todo(fd, "ERROR LOOKUP invalido\n");
         return;
     }
 
-    pthread_mutex_lock(&g_registry_mutex);
-    for (size_t i = 0; i < g_file_count && peer_count < P2P_MAX_PEERS; i++) {
-        if (g_files[i].size == (uint64_t)size && strcmp(g_files[i].hash, hash) == 0) {
-            int duplicate = 0;
-            for (size_t j = 0; j < peer_count; j++) {
-                if (same_endpoint(&peers[j], &g_files[i].owner)) {
-                    duplicate = 1;
+    pthread_mutex_lock(&candado_registro);
+    for (size_t i = 0; i < cantidad_archivos_registrados && cantidad_pares < P2P_MAX_PEERS; i++) {
+        if (archivos_registrados[i].tamano == (uint64_t)tamano && strcmp(archivos_registrados[i].hash, hash) == 0) {
+            int repetido = 0;
+            for (size_t j = 0; j < cantidad_pares; j++) {
+                if (mismo_punto(&pares[j], &archivos_registrados[i].dueno)) {
+                    repetido = 1;
                     break;
                 }
             }
-            if (!duplicate) {
-                peers[peer_count++] = g_files[i].owner;
+            if (!repetido) {
+                pares[cantidad_pares++] = archivos_registrados[i].dueno;
             }
         }
     }
-    pthread_mutex_unlock(&g_registry_mutex);
+    pthread_mutex_unlock(&candado_registro);
 
-    snprintf(response, sizeof(response), "PEERS %zu\n", peer_count);
-    write_all(fd, response);
-    for (size_t i = 0; i < peer_count; i++) {
-        snprintf(response, sizeof(response), "PEER %s %u\n", peers[i].ip, peers[i].port);
-        write_all(fd, response);
+    snprintf(respuesta, sizeof(respuesta), "PEERS %zu\n", cantidad_pares);
+    escribir_todo(fd, respuesta);
+    for (size_t i = 0; i < cantidad_pares; i++) {
+        snprintf(respuesta, sizeof(respuesta), "PEER %s %u\n", pares[i].ip, pares[i].puerto);
+        escribir_todo(fd, respuesta);
     }
-    write_all(fd, "END\n");
+    escribir_todo(fd, "END\n");
 }
 
-static void *client_thread(void *arg) {
+static void *hilo_cliente(void *arg) {
     client_connection_t *connection = arg;
-    char line[P2P_MAX_LINE];
+    char linea[P2P_MAX_LINE];
 
-    if (read_line(connection->fd, line, sizeof(line)) > 0) {
-        if (strncmp(line, "REGISTER ", 9) == 0) {
-            handle_register(connection->fd, &connection->addr, line);
-        } else if (strncmp(line, "FIND ", 5) == 0) {
-            handle_find(connection->fd, line);
-        } else if (strncmp(line, "LOOKUP ", 7) == 0) {
-            handle_lookup(connection->fd, line);
+    if (leer_linea(connection->fd, linea, sizeof(linea)) > 0) {
+        if (strncmp(linea, "REGISTER ", 9) == 0) {
+            atender_registro(connection->fd, &connection->addr, linea);
+        } else if (strncmp(linea, "FIND ", 5) == 0) {
+            atender_find(connection->fd, linea);
+        } else if (strncmp(linea, "LOOKUP ", 7) == 0) {
+            atender_lookup(connection->fd, linea);
         } else {
-            write_all(connection->fd, "ERROR unknown command\n");
+            escribir_todo(connection->fd, "ERROR comando desconocido\n");
         }
     }
 
@@ -343,7 +361,7 @@ static void *client_thread(void *arg) {
     return NULL;
 }
 
-static int create_listen_socket(uint16_t port) {
+static int crear_socket_escucha(uint16_t puerto) {
     int fd;
     int opt = 1;
     struct sockaddr_in addr;
@@ -358,7 +376,7 @@ static int create_listen_socket(uint16_t port) {
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(port);
+    addr.sin_port = htons(puerto);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
         close(fd);
@@ -379,31 +397,31 @@ int main(int argc, char **argv) {
     int listen_fd;
 
     if (argc != 2) {
-        fprintf(stderr, "usage: %s <port>\n", argv[0]);
+        fprintf(stderr, "uso: %s <puerto>\n", argv[0]);
         return 2;
     }
 
     port_value = strtoul(argv[1], &end, 10);
     if (*argv[1] == '\0' || *end != '\0' || port_value == 0 || port_value > 65535UL) {
-        fprintf(stderr, "invalid port: %s\n", argv[1]);
+        fprintf(stderr, "puerto invalido: %s\n", argv[1]);
         return 2;
     }
 
     signal(SIGPIPE, SIG_IGN);
 
-    listen_fd = create_listen_socket((uint16_t)port_value);
+    listen_fd = crear_socket_escucha((uint16_t)port_value);
     if (listen_fd < 0) {
         perror("listen socket");
         return 1;
     }
 
-    printf("P2P server listening on port %lu\n", port_value);
+    printf("P2P servidor escuchando en puerto %lu\n", port_value);
     fflush(stdout);
 
     while (1) {
         client_connection_t *connection;
         socklen_t addr_len;
-        pthread_t thread;
+        pthread_t hilo;
 
         connection = calloc(1, sizeof(*connection));
         if (connection == NULL) {
@@ -421,12 +439,12 @@ int main(int argc, char **argv) {
             break;
         }
 
-        if (pthread_create(&thread, NULL, client_thread, connection) != 0) {
+        if (pthread_create(&hilo, NULL, hilo_cliente, connection) != 0) {
             close(connection->fd);
             free(connection);
             continue;
         }
-        pthread_detach(thread);
+        pthread_detach(hilo);
     }
 
     close(listen_fd);

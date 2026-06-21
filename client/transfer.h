@@ -3,22 +3,22 @@
 
 #include "client.h"
 
-int transfer_server_start(const p2p_client_context_t *context);
-int transfer_download_from_peer(const p2p_client_context_t *context,
-                                const p2p_endpoint_t *peer,
-                                uint64_t size,
+int iniciar_servidor_transferencia(const contexto_cliente_p2p_t *contexto);
+int descargar_de_par(const contexto_cliente_p2p_t *contexto,
+                                const punto_red_p2p_t *par,
+                                uint64_t tamano,
                                 const char *hash,
-                                char *saved_path,
-                                size_t saved_path_size,
-                                int *already_present);
-int transfer_download_from_peers(const p2p_client_context_t *context,
-                                 const p2p_endpoint_t *peers,
-                                 size_t peer_count,
-                                 uint64_t size,
+                                char *ruta_guardada,
+                                size_t tamano_ruta_guardada,
+                                int *ya_existe);
+int descargar_de_pares(const contexto_cliente_p2p_t *contexto,
+                                 const punto_red_p2p_t *pares,
+                                 size_t cantidad_pares,
+                                 uint64_t tamano,
                                  const char *hash,
-                                 char *saved_path,
-                                 size_t saved_path_size,
-                                 int *already_present,
-                                 int *segmented);
+                                 char *ruta_guardada,
+                                 size_t tamano_ruta_guardada,
+                                 int *ya_existe,
+                                 int *segmentado);
 
 #endif
