@@ -22,6 +22,7 @@ test-server: server
 
 test-client: server client
 	bash tests/test_client_registration.sh
+	bash tests/test_multi_client.sh
 
 clean:
 	rm -f $(BIN_DIR)/server $(BIN_DIR)/client

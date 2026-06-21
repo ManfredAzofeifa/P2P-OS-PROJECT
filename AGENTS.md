@@ -9,4 +9,4 @@ Important constraints:
 - Do not add external libraries.
 - Work one component at a time.
 - Keep `make test` passing when possible.
-- The next planned component is full multi-client integration tests.
+- The planned project roadmap is complete; do not begin new work without an explicitly defined scope.

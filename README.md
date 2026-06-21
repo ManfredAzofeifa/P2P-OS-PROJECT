@@ -88,19 +88,16 @@ Implemented:
 - Duplicate distributed-query suppression.
 - Seen-query expiration using `P2P_SEEN_QUERY_TTL_SECONDS`.
 - Distributed search output includes matching file size, hash, name, owner IP, and owner port.
+- Full multi-client integration coverage using six real client processes in a looped and TTL-bounded topology.
 - Tests for hash behavior, server protocol behavior, client registration, centralized client search, request lookup, single-peer downloads, segmented downloads, reassembly, peer failover, unavailable peers, failed transfers, and peer range serving.
 
 Pending:
 
-- Full multi-client integration tests.
+- None. The current project roadmap is complete.
 
-## Recommended Next Work
+## Roadmap Status
 
-The next component should be full multi-client integration tests:
-
-1. Exercise distributed flooding across multiple client processes.
-2. Verify direct results from peers beyond the originator's immediate neighbors.
-3. Cover loop suppression and TTL boundaries across a complete client topology.
+The planned implementation roadmap is complete. Any additional work should begin only with an explicitly defined new scope.
 
 ## Socket Protocol
 
@@ -199,6 +196,11 @@ Current test targets:
   - Verifies duplicate query IDs are suppressed.
   - Verifies expired seen-query entries can be accepted again.
   - Sends `find -s` through the client console and verifies a matching peer is printed.
+  - Starts six real clients with scripted neighbor relationships.
+  - Verifies a file is discovered beyond the originator's immediate neighbor.
+  - Verifies `DRESULT` is sent directly to the originator with complete owner and file metadata.
+  - Verifies a duplicate query is suppressed in a looped client topology.
+  - Verifies TTL exhaustion prevents discovery of an owner beyond the forwarding boundary.
   - Sends `find -s` for a missing file and verifies no-match reporting.
   - Sends `request <S> <H>` and verifies candidate peers are printed.
   - Verifies `request <S> <H>` downloads from one candidate peer into `<shared_folder>/<hash>`.
