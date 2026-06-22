@@ -1,21 +1,5 @@
 /*
  * servidor.c - Servidor P2P principal.
- *
- * Documentacion de funciones:
- * limpiar_salto_linea: limpia mensajes; recibe una linea; ayuda al protocolo textual.
- * leer_linea: lee una linea de socket; recibe fd, buffer y tamano; recibe REGISTER, FIND y LOOKUP.
- * escribir_todo: envia texto completo; recibe fd y texto; responde a clientes.
- * punto_desde_sockaddr: obtiene IP/puerto del cliente; recibe sockaddr y puerto; guarda duenos de archivos.
- * mismo_punto: compara IP/puerto; recibe dos puntos; evita duplicados.
- * quitar_archivos_del_dueno: borra registros viejos; recibe dueno; mantiene metadatos actualizados.
- * guardar_cliente_reciente: actualiza clientes recientes; recibe punto; permite devolver vecinos.
- * juntar_vecinos: escoge vecinos recientes; recibe cliente actual, salida y maximo; apoya busqueda distribuida.
- * atender_registro: procesa REGISTER/FILE/END; recibe socket, direccion y linea; guarda hash, tamano y dueno.
- * atender_find: procesa FIND; recibe socket y linea; resuelve find -s.
- * atender_lookup: procesa LOOKUP; recibe socket y linea; resuelve request por tamano/hash.
- * hilo_cliente: atiende una conexion; recibe datos del socket; permite varios clientes.
- * crear_socket_escucha: abre socket TCP; recibe puerto; levanta el servidor central.
- * main: inicia el servidor; recibe puerto por argv; ejecuta el servidor P2P.
  */
 
 #include <arpa/inet.h>
@@ -49,6 +33,9 @@ static punto_red_p2p_t clientes_recientes[MAX_REGISTERED_CLIENTS];
 static size_t cantidad_clientes_recientes = 0;
 static pthread_mutex_t candado_registro = PTHREAD_MUTEX_INITIALIZER;
 
+// Elimina los caracteres de salto de linea ('\n', '\r') al final de una cadena.
+// Recibe: la linea recibida por socket que puede traer saltos de linea del protocolo textual.
+// Devuelve: nada; modifica la cadena en el lugar.
 static void limpiar_salto_linea(char *linea) {
     size_t len;
 
@@ -63,6 +50,9 @@ static void limpiar_salto_linea(char *linea) {
     }
 }
 
+// Lee una linea completa desde un socket, caracter por caracter, hasta '\n' o fin de conexion.
+// Recibe: el socket del cliente, el buffer donde guardar la linea, y el tamano maximo del buffer.
+// Devuelve: 1 si se leyo al menos un caracter, 0 si la conexion cerro sin datos, -1 si hubo error.
 static int leer_linea(int fd, char *buffer, size_t tamano) {
     size_t used = 0;
 
@@ -95,6 +85,9 @@ static int leer_linea(int fd, char *buffer, size_t tamano) {
     return used > 0 ? 1 : 0;
 }
 
+// Envia un texto completo por socket, reintentando si el sistema operativo manda menos bytes de los pedidos.
+// Recibe: el socket del cliente de destino, y el texto de respuesta a enviar.
+// Devuelve: 0 si se envio todo, -1 si hubo error de red.
 static int escribir_todo(int fd, const char *texto) {
     size_t total = 0;
     size_t len = strlen(texto);
@@ -114,6 +107,10 @@ static int escribir_todo(int fd, const char *texto) {
     return 0;
 }
 
+// Extrae la direccion IP y asigna el puerto de transferencia desde la direccion de socket de un cliente.
+// Recibe: la direccion de socket del cliente recien conectado, el puerto de transferencia que el cliente declaro,
+//         y el endpoint donde guardar la IP convertida y el puerto.
+// Devuelve: nada; rellena el endpoint con los datos del cliente.
 static void punto_desde_sockaddr(const struct sockaddr_storage *addr,
                                    uint16_t puerto_transferencia,
                                    punto_red_p2p_t *endpoint) {
@@ -134,10 +131,16 @@ static void punto_desde_sockaddr(const struct sockaddr_storage *addr,
     }
 }
 
+// Compara si dos endpoints (IP + puerto) representan el mismo nodo de la red.
+// Recibe: los dos puntos de red a comparar.
+// Devuelve: 1 si tienen la misma IP y el mismo puerto, 0 si difieren en alguno.
 static int mismo_punto(const punto_red_p2p_t *a, const punto_red_p2p_t *b) {
     return a->puerto == b->puerto && strcmp(a->ip, b->ip) == 0;
 }
 
+// Elimina del registro global todos los archivos que pertenecen a un cliente dado.
+// Recibe: el endpoint del dueno cuyos archivos deben borrarse del indice del servidor.
+// Devuelve: nada; modifica el arreglo global de archivos registrados en el lugar.
 static void quitar_archivos_del_dueno(const punto_red_p2p_t *dueno) {
     size_t i = 0;
 
@@ -151,6 +154,9 @@ static void quitar_archivos_del_dueno(const punto_red_p2p_t *dueno) {
     }
 }
 
+// Actualiza la lista de clientes recientes, moviendo al cliente al final si ya existia o agregandolo nuevo.
+// Recibe: el endpoint del cliente que acaba de registrarse exitosamente.
+// Devuelve: nada; modifica el arreglo global de clientes recientes.
 static void guardar_cliente_reciente(const punto_red_p2p_t *endpoint) {
     size_t i;
 
@@ -176,6 +182,10 @@ static void guardar_cliente_reciente(const punto_red_p2p_t *endpoint) {
     clientes_recientes[MAX_REGISTERED_CLIENTS - 1] = *endpoint;
 }
 
+// Selecciona los clientes mas recientes para devolvercelos como vecinos al cliente que se esta registrando.
+// Recibe: el endpoint del cliente que se esta registrando (para excluirse a si mismo),
+//         el arreglo donde guardar los vecinos seleccionados, y cuantos vecinos como maximo devolver.
+// Devuelve: la cantidad de vecinos efectivamente seleccionados.
 static size_t juntar_vecinos(const punto_red_p2p_t *self,
                                 punto_red_p2p_t *vecinos,
                                 size_t max_vecinos) {
@@ -193,6 +203,10 @@ static size_t juntar_vecinos(const punto_red_p2p_t *self,
     return count;
 }
 
+// Procesa una sesion de registro: lee los archivos enviados por el cliente, los indexa, y responde con vecinos.
+// Recibe: el socket del cliente, la direccion de red del cliente,
+//         y la primera linea del mensaje REGISTER ya leida con el puerto y cantidad de archivos.
+// Devuelve: nada; envia la respuesta OK y la lista de vecinos, o un ERROR si el protocolo falla.
 static void atender_registro(int fd,
                             const struct sockaddr_storage *addr,
                             const char *linea) {
@@ -265,6 +279,9 @@ static void atender_registro(int fd,
     escribir_todo(fd, "END\n");
 }
 
+// Procesa un FIND: busca en el indice global que clientes tienen un archivo con ese nombre y devuelve sus endpoints.
+// Recibe: el socket del cliente, y la linea del mensaje FIND con el nombre del archivo a buscar.
+// Devuelve: nada; envia PEERS con la lista de pares encontrados, o ERROR si el mensaje es invalido.
 static void atender_find(int fd, const char *linea) {
     char nombre[P2P_MAX_NAME];
     punto_red_p2p_t pares[P2P_MAX_PEERS];
@@ -302,6 +319,9 @@ static void atender_find(int fd, const char *linea) {
     escribir_todo(fd, "END\n");
 }
 
+// Procesa un LOOKUP: busca en el indice global que clientes tienen un archivo con ese tamano y hash exactos.
+// Recibe: el socket del cliente, y la linea del mensaje LOOKUP con el tamano y el hash a buscar.
+// Devuelve: nada; envia PEERS con los pares encontrados, o ERROR si el mensaje es invalido.
 static void atender_lookup(int fd, const char *linea) {
     unsigned long long tamano;
     char hash[P2P_HASH_STR_LEN];
@@ -340,6 +360,9 @@ static void atender_lookup(int fd, const char *linea) {
     escribir_todo(fd, "END\n");
 }
 
+// Atiende una conexion de cliente en su propio hilo: lee el primer comando y delega al handler correspondiente.
+// Recibe: el socket y la direccion del cliente aceptados por el listener principal, empaquetados en un client_connection_t.
+// Devuelve: NULL siempre; libera la memoria del argumento antes de terminar.
 static void *hilo_cliente(void *arg) {
     client_connection_t *connection = arg;
     char linea[P2P_MAX_LINE];
@@ -361,6 +384,9 @@ static void *hilo_cliente(void *arg) {
     return NULL;
 }
 
+// Crea y configura un socket TCP en el puerto indicado, listo para aceptar conexiones entrantes.
+// Recibe: el numero de puerto en el que el servidor debe escuchar.
+// Devuelve: el file descriptor del socket en escucha, o -1 si no se pudo crear, enlazar, o poner en escucha.
 static int crear_socket_escucha(uint16_t puerto) {
     int fd;
     int opt = 1;
@@ -391,6 +417,9 @@ static int crear_socket_escucha(uint16_t puerto) {
     return fd;
 }
 
+// Punto de entrada del servidor P2P: valida el puerto, abre el socket de escucha, y atiende conexiones en bucle.
+// Recibe: el numero de puerto como argumento de linea de comandos.
+// Devuelve: 2 si el argumento es invalido, 1 si fallo la inicializacion del socket, nunca retorna 0 en operacion normal.
 int main(int argc, char **argv) {
     unsigned long port_value;
     char *end = NULL;

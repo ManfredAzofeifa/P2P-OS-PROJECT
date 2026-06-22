@@ -1,13 +1,5 @@
 /*
  * console.c - Interfaz de consola: find y request.
- *
- * Documentacion de funciones:
- * mostrar_archivos: imprime archivos locales; recibe contexto; ayuda a revisar hashes y tamanos.
- * mostrar_vecinos: imprime vecinos; recibe contexto; muestra la topologia recibida.
- * atender_find_servidor: ejecuta find -s; recibe contexto y nombre; resuelve busqueda central.
- * leer_argumentos_request: lee tamano/hash; recibe texto y salidas; valida request <S> <H>.
- * atender_request_lookup: busca y descarga; recibe contexto y argumentos; resuelve request.
- * correr_consola_cliente: procesa comandos; recibe contexto; implementa la consola del cliente.
  */
 
 #include "client.h"
@@ -20,6 +12,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Imprime en pantalla la lista de archivos locales del cliente, con tamano, hash y nombre.
+// Recibe: el contexto del cliente con el arreglo de archivos locales ya cargados.
+// Devuelve: nada.
 static void mostrar_archivos(const contexto_cliente_p2p_t *contexto) {
     if (contexto->cantidad_archivos == 0) {
         printf("no hay archivos locales\n");
@@ -34,6 +29,9 @@ static void mostrar_archivos(const contexto_cliente_p2p_t *contexto) {
     }
 }
 
+// Imprime en pantalla la lista de vecinos conocidos, con su IP y puerto de transferencia.
+// Recibe: el contexto del cliente con la lista de vecinos recibida al registrarse.
+// Devuelve: nada.
 static void mostrar_vecinos(const contexto_cliente_p2p_t *contexto) {
     if (contexto->cantidad_vecinos == 0) {
         printf("no hay vecinos\n");
@@ -45,6 +43,9 @@ static void mostrar_vecinos(const contexto_cliente_p2p_t *contexto) {
     }
 }
 
+// Ejecuta una busqueda por nombre en el servidor central e imprime los pares que tienen el archivo.
+// Recibe: el contexto del cliente con la direccion del servidor, y el nombre del archivo a buscar.
+// Devuelve: nada; los resultados se imprimen directamente en pantalla.
 static void atender_find_servidor(const contexto_cliente_p2p_t *contexto, const char *nombre) {
     punto_red_p2p_t pares[P2P_MAX_PEERS];
     size_t cantidad_pares = 0;
@@ -69,6 +70,10 @@ static void atender_find_servidor(const contexto_cliente_p2p_t *contexto, const 
         printf("%s %u\n", pares[i].ip, pares[i].puerto);
     }
 }
+
+// Ejecuta una busqueda distribuida por nombre entre los vecinos e imprime los resultados con su dueno.
+// Recibe: el contexto del cliente con la lista de vecinos, y el nombre del archivo a buscar.
+// Devuelve: nada; los resultados se imprimen directamente en pantalla.
 static void handle_find_distributed(const contexto_cliente_p2p_t *contexto,
                                     const char *nombre) {
     metadato_archivo_p2p_t resultados[P2P_MAX_PEERS];
@@ -95,7 +100,10 @@ static void handle_find_distributed(const contexto_cliente_p2p_t *contexto,
     }
 }
 
-
+// Extrae el tamano y el hash desde el texto que viene despues del comando "request".
+// Recibe: el texto con los argumentos en formato "<tamano> <hash>",
+//         donde guardar el tamano parseado, y donde guardar el hash.
+// Devuelve: 0 si los argumentos son validos, -1 si faltan datos, el hash es incorrecto, o el tamano no es numerico.
 static int leer_argumentos_request(const char *args, uint64_t *tamano, char hash[P2P_HASH_STR_LEN]) {
     char size_text[32];
     char hash_text[P2P_HASH_STR_LEN];
@@ -125,6 +133,10 @@ static int leer_argumentos_request(const char *args, uint64_t *tamano, char hash
     return 0;
 }
 
+// Procesa el comando "request": busca pares en el servidor por tamano/hash y descarga el archivo.
+// Recibe: el contexto del cliente con la direccion del servidor y la carpeta de destino,
+//         y el texto con los argumentos "<tamano> <hash>" que siguen al comando.
+// Devuelve: nada; imprime el resultado de la descarga o el error correspondiente.
 static void atender_request_lookup(const contexto_cliente_p2p_t *contexto, const char *args) {
     uint64_t tamano;
     char hash[P2P_HASH_STR_LEN];
@@ -172,6 +184,9 @@ static void atender_request_lookup(const contexto_cliente_p2p_t *contexto, const
     }
 }
 
+// Lee comandos del usuario en un bucle e invoca la accion correspondiente hasta que el usuario salga.
+// Recibe: el contexto del cliente con toda la informacion de red y archivos locales necesaria para ejecutar los comandos.
+// Devuelve: nada; termina cuando el usuario escribe "quit", "exit", o cierra stdin.
 void correr_consola_cliente(contexto_cliente_p2p_t *contexto) {
     char linea[P2P_MAX_LINE];
 

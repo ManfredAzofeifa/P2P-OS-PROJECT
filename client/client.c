@@ -1,19 +1,5 @@
 /*
- * cliente.c - Cliente P2P principal.
- *
- * Documentacion de funciones:
- * leer_puerto: convierte texto a puerto; recibe texto y salida; valida argumentos CLI.
- * limpiar_salto_linea: limpia mensajes; recibe linea; ayuda al protocolo por sockets.
- * leer_linea: lee linea de socket; recibe fd, buffer y tamano; recibe respuestas del servidor.
- * escribir_todo: envia texto completo; recibe fd y texto; envia REGISTER, FIND y LOOKUP.
- * armar_ruta: une carpeta y nombre; recibe salida, tamano, carpeta y nombre; ubica archivos compartidos.
- * revisar_carpeta_compartida: escanea archivos y hashes; recibe contexto; registra archivos al iniciar.
- * conectar_servidor: abre TCP al servidor; recibe host y puerto; comunica cliente-servidor.
- * leer_vecinos: lee vecinos; recibe fd y contexto; guarda vecinos para busqueda distribuida.
- * registrar_con_servidor: envia metadatos; recibe contexto; publica archivos en servidor.
- * buscar_en_servidor: ejecuta FIND; recibe contexto, nombre y salida de pares; resuelve find -s.
- * buscar_hash_en_servidor: ejecuta LOOKUP; recibe contexto, tamano, hash y salida; apoya request.
- * main: inicia cliente; recibe servidor, puertos y carpeta; ejecuta registro, transferencia y consola.
+ * client.c - Cliente P2P principal.
  */
 
 #include "client.h"
@@ -35,6 +21,9 @@
 
 #include "../server/hash.h"
 
+// Convierte un texto que representa un numero de puerto en un valor uint16_t.
+// Recibe: el texto con el numero a convertir, y donde guardar el resultado.
+// Devuelve: 0 si el texto es un puerto valido (1-65535), -1 si es invalido o NULL.
 static int leer_puerto(const char *texto, uint16_t *out) {
     unsigned long value;
     char *end = NULL;
@@ -52,6 +41,9 @@ static int leer_puerto(const char *texto, uint16_t *out) {
     return 0;
 }
 
+// Elimina los caracteres de salto de linea ('\n', '\r') al final de una cadena.
+// Recibe: la linea recibida por socket que puede traer saltos de linea del protocolo.
+// Devuelve: nada; modifica la cadena en el lugar.
 static void limpiar_salto_linea(char *linea) {
     size_t len;
 
@@ -66,6 +58,9 @@ static void limpiar_salto_linea(char *linea) {
     }
 }
 
+// Lee una linea completa desde un socket, caracter por caracter, hasta '\n' o fin de conexion.
+// Recibe: el socket del que leer, el buffer donde guardar la linea, y el tamano maximo del buffer.
+// Devuelve: 1 si se leyo al menos un caracter, 0 si la conexion cerro sin datos, -1 si hubo error.
 static int leer_linea(int fd, char *buffer, size_t tamano) {
     size_t used = 0;
 
@@ -98,6 +93,9 @@ static int leer_linea(int fd, char *buffer, size_t tamano) {
     return used > 0 ? 1 : 0;
 }
 
+// Envia un texto completo por socket, reintentando si el sistema operativo manda menos bytes de los pedidos.
+// Recibe: el socket de destino, y el texto a enviar (terminado en '\0').
+// Devuelve: 0 si se envio todo, -1 si hubo error de red.
 static int escribir_todo(int fd, const char *texto) {
     size_t total = 0;
     size_t len = strlen(texto);
@@ -117,6 +115,9 @@ static int escribir_todo(int fd, const char *texto) {
     return 0;
 }
 
+// Construye una ruta de archivo uniendo la carpeta compartida con el nombre del archivo.
+// Recibe: donde guardar la ruta armada, el tamano de ese buffer, la carpeta base, y el nombre del archivo.
+// Devuelve: 0 si la ruta cabia en el buffer, -1 si la ruta resultante es demasiado larga.
 static int armar_ruta(char *out, size_t out_size, const char *carpeta, const char *nombre) {
     int written;
 
@@ -128,6 +129,9 @@ static int armar_ruta(char *out, size_t out_size, const char *carpeta, const cha
     return 0;
 }
 
+// Escanea la carpeta compartida y carga en el contexto los metadatos (nombre, tamano, hash) de cada archivo regular.
+// Recibe: el contexto del cliente, donde se guardaran los archivos encontrados y la ruta de la carpeta.
+// Devuelve: 0 siempre; los errores individuales se reportan como advertencias pero no detienen el escaneo.
 static int revisar_carpeta_compartida(contexto_cliente_p2p_t *contexto) {
     DIR *carpeta;
     struct dirent *entrada;
@@ -194,6 +198,9 @@ static int revisar_carpeta_compartida(contexto_cliente_p2p_t *contexto) {
     return 0;
 }
 
+// Abre una conexion TCP hacia el servidor central del sistema P2P.
+// Recibe: la direccion IP o nombre de host del servidor, y el puerto donde escucha.
+// Devuelve: el file descriptor del socket conectado, o -1 si no se pudo conectar.
 static int conectar_servidor(const char *host, uint16_t puerto) {
     struct addrinfo hints;
     struct addrinfo *resultados = NULL;
@@ -226,6 +233,10 @@ static int conectar_servidor(const char *host, uint16_t puerto) {
     return fd;
 }
 
+// Lee la lista de vecinos que el servidor envia tras el registro, y la guarda en el contexto.
+// Recibe: el socket ya conectado al servidor con la respuesta NEIGHBORS lista para leer,
+//         y el contexto donde guardar los vecinos recibidos.
+// Devuelve: 0 si se recibio la lista completa hasta "END", -1 si la conexion fallo o el formato era invalido.
 static int leer_vecinos(int fd, contexto_cliente_p2p_t *contexto) {
     char linea[P2P_MAX_LINE];
     unsigned int esperados;
@@ -261,6 +272,9 @@ static int leer_vecinos(int fd, contexto_cliente_p2p_t *contexto) {
     return -1;
 }
 
+// Conecta al servidor y envia el mensaje REGISTER con todos los archivos locales para publicarlos en la red.
+// Recibe: el contexto del cliente con la IP del servidor, los puertos, y la lista de archivos a registrar.
+// Devuelve: 0 si el servidor respondio OK y se recibieron los vecinos, -1 si hubo algun fallo.
 static int registrar_con_servidor(contexto_cliente_p2p_t *contexto) {
     int fd;
     char linea[P2P_MAX_LINE];
@@ -334,6 +348,10 @@ static int registrar_con_servidor(contexto_cliente_p2p_t *contexto) {
     return 0;
 }
 
+// Envia un FIND al servidor para buscar que pares tienen un archivo con ese nombre.
+// Recibe: el contexto con la direccion del servidor, el nombre del archivo buscado,
+//         el arreglo donde guardar los pares encontrados, cuantos caben, y donde escribir cuantos se recibieron.
+// Devuelve: 0 si la busqueda termino correctamente (aunque no haya resultados), -1 si hubo error de red o protocolo.
 int buscar_en_servidor(const contexto_cliente_p2p_t *contexto,
                           const char *nombre,
                           punto_red_p2p_t *pares,
@@ -397,6 +415,10 @@ int buscar_en_servidor(const contexto_cliente_p2p_t *contexto,
     return -1;
 }
 
+// Envia un LOOKUP al servidor para buscar que pares tienen un archivo que coincida con el tamano y hash dados.
+// Recibe: el contexto con la direccion del servidor, el tamano exacto del archivo buscado, su hash,
+//         el arreglo donde guardar los pares, cuantos caben, y donde escribir cuantos se encontraron.
+// Devuelve: 0 si la busqueda termino correctamente, -1 si hubo error de red o el protocolo respondio mal.
 int buscar_hash_en_servidor(const contexto_cliente_p2p_t *contexto,
                             uint64_t tamano,
                             const char *hash,
@@ -461,6 +483,11 @@ int buscar_hash_en_servidor(const contexto_cliente_p2p_t *contexto,
     return -1;
 }
 
+// Punto de entrada del cliente P2P: valida argumentos, carga archivos locales, se registra con el servidor,
+// e inicia el servidor de transferencia y la consola interactiva.
+// Recibe: los argumentos de linea de comandos: IP del servidor, puerto del servidor,
+//         puerto de transferencia, y ruta de la carpeta compartida.
+// Devuelve: 0 si termino correctamente, 1 si hubo error en ejecucion, 2 si los argumentos son invalidos.
 int main(int argc, char **argv) {
     contexto_cliente_p2p_t contexto;
 

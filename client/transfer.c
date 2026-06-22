@@ -1,26 +1,5 @@
 /*
  * transfer.c - Envio y recepcion de archivos por segmentos.
- *
- * Documentacion de funciones:
- * limpiar_salto_linea: limpia mensajes; recibe linea; ayuda a leer GET/DATA/ERROR.
- * leer_linea: lee linea de socket; recibe fd, buffer y tamano; procesa protocolo de transferencia.
- * escribir_todo: envia bytes completos; recibe fd, datos y largo; manda DATA y rangos.
- * escribir_texto: envia texto; recibe fd y texto; manda encabezados y errores.
- * armar_ruta: arma ruta local; recibe salida, tamano, carpeta y nombre; ubica archivo compartido.
- * buscar_archivo_local: busca archivo local por tamano/hash; recibe contexto, tamano y hash; sirve request por contenido.
- * enviar_rango_archivo: manda un rango; recibe fd, contexto, archivo, inicio y largo; resuelve GET por rangos.
- * hilo_pedido_transferencia: atiende un GET; recibe pedido aceptado; crea un hilo por solicitud entrante.
- * hilo_aceptar_transferencias: acepta conexiones; recibe servidor de transferencia; mantiene listener del cliente.
- * crear_socket_escucha: abre socket TCP; recibe puerto; levanta puerto de transferencia.
- * leer_exacto: lee cantidad exacta de bytes; recibe fd, buffer y largo; descarga DATA sin cortar.
- * conectar_par: conecta con otro cliente; recibe IP/puerto; permite descargar desde pares.
- * archivo_calza_con_pedido: valida archivo existente; recibe ruta, tamano y hash; evita sobrescribir descargas correctas.
- * armar_ruta_parcial: arma ruta .part; recibe salida y ruta final; evita dejar archivos incompletos como finales.
- * crear_archivo_vacio: reserva salida; recibe ruta y tamano; prepara reensamblado segmentado.
- * hilo_descarga_rango: descarga un rango; recibe tarea de rango; permite descargas segmentadas concurrentes.
- * iniciar_servidor_transferencia: inicia listener; recibe contexto; permite que otros clientes pidan rangos.
- * descargar_de_par: descarga desde un par; recibe contexto, par, tamano, hash y salida; resuelve request con un candidato.
- * descargar_de_pares: descarga con varios pares; recibe contexto, pares, tamano, hash y salidas; resuelve descarga segmentada.
  */
 
 #include "transfer.h"
@@ -56,6 +35,9 @@ typedef struct {
     const contexto_cliente_p2p_t *contexto;
 } servidor_transferencia_t;
 
+// Elimina los caracteres de salto de linea ('\n', '\r') al final de una cadena.
+// Recibe: la linea recibida por socket que puede traer saltos de linea del protocolo de transferencia.
+// Devuelve: nada; modifica la cadena en el lugar.
 static void limpiar_salto_linea(char *linea) {
     size_t len;
 
@@ -70,6 +52,9 @@ static void limpiar_salto_linea(char *linea) {
     }
 }
 
+// Lee una linea completa desde un socket, caracter por caracter, hasta '\n' o fin de conexion.
+// Recibe: el socket del par conectado, el buffer donde guardar la linea, y el tamano maximo del buffer.
+// Devuelve: 1 si se leyo al menos un caracter, 0 si la conexion cerro sin datos, -1 si hubo error.
 static int leer_linea(int fd, char *buffer, size_t tamano) {
     size_t used = 0;
 
@@ -102,6 +87,9 @@ static int leer_linea(int fd, char *buffer, size_t tamano) {
     return used > 0 ? 1 : 0;
 }
 
+// Envia un bloque de bytes completo por socket, reintentando si el sistema operativo manda menos de los pedidos.
+// Recibe: el socket de destino, el bloque de datos a enviar (puede ser binario), y la cantidad de bytes a enviar.
+// Devuelve: 0 si se enviaron todos los bytes, -1 si hubo error de red.
 static int escribir_todo(int fd, const void *datos, size_t len) {
     const char *bytes = datos;
     size_t total = 0;
@@ -121,10 +109,16 @@ static int escribir_todo(int fd, const void *datos, size_t len) {
     return 0;
 }
 
+// Envia una cadena de texto completa por socket usando escribir_todo.
+// Recibe: el socket de destino, y el texto a enviar (encabezados del protocolo o mensajes de error).
+// Devuelve: 0 si se envio todo, -1 si hubo error de red.
 static int escribir_texto(int fd, const char *texto) {
     return escribir_todo(fd, texto, strlen(texto));
 }
 
+// Construye una ruta de archivo uniendo la carpeta compartida con el nombre del archivo.
+// Recibe: donde guardar la ruta armada, el tamano de ese buffer, la carpeta base, y el nombre del archivo.
+// Devuelve: 0 si la ruta cabia en el buffer, -1 si la ruta resultante es demasiado larga.
 static int armar_ruta(char *out, size_t out_size, const char *carpeta, const char *nombre) {
     int written = snprintf(out, out_size, "%s/%s", carpeta, nombre);
 
@@ -135,6 +129,9 @@ static int armar_ruta(char *out, size_t out_size, const char *carpeta, const cha
     return 0;
 }
 
+// Busca en los archivos locales del cliente cual coincide con el tamano y el hash pedidos.
+// Recibe: el contexto del cliente con la lista de archivos locales, el tamano exacto buscado, y el hash buscado.
+// Devuelve: puntero al metadato del archivo encontrado, o NULL si ningun archivo local coincide.
 static const metadato_archivo_p2p_t *buscar_archivo_local(const contexto_cliente_p2p_t *contexto,
                                                   uint64_t tamano,
                                                   const char *hash) {
@@ -148,6 +145,13 @@ static const metadato_archivo_p2p_t *buscar_archivo_local(const contexto_cliente
     return NULL;
 }
 
+// Lee un rango del archivo local indicado y lo envia al socket solicitante con el encabezado DATA.
+// Recibe: el socket del par que solicita el rango,
+//         el contexto del cliente con la carpeta compartida,
+//         el metadato del archivo a leer con su nombre y tamano esperado,
+//         el byte de inicio del rango dentro del archivo,
+//         y la cantidad de bytes a enviar desde ese inicio.
+// Devuelve: 0 si el rango se envio completo, -1 si el archivo no esta disponible o hubo error al leerlo o enviarlo.
 static int enviar_rango_archivo(int fd,
                            const contexto_cliente_p2p_t *contexto,
                            const metadato_archivo_p2p_t *archivo,
@@ -209,6 +213,9 @@ static int enviar_rango_archivo(int fd,
     return 0;
 }
 
+// Atiende en su propio hilo una solicitud GET entrante de otro cliente: busca el archivo localmente y envia el rango pedido.
+// Recibe: un pedido_transferencia_t con el socket del par solicitante y el contexto del cliente actual.
+// Devuelve: NULL siempre; libera la memoria del argumento antes de terminar.
 static void *hilo_pedido_transferencia(void *arg) {
     pedido_transferencia_t *pedido = arg;
     char linea[P2P_MAX_LINE];
@@ -252,6 +259,9 @@ static void *hilo_pedido_transferencia(void *arg) {
     return NULL;
 }
 
+// Corre en un hilo de fondo aceptando conexiones entrantes de pares y creando un hilo por cada solicitud GET.
+// Recibe: un servidor_transferencia_t con el socket en escucha y el contexto del cliente.
+// Devuelve: NULL siempre; libera la memoria del servidor antes de terminar.
 static void *hilo_aceptar_transferencias(void *arg) {
     servidor_transferencia_t *servidor = arg;
 
@@ -289,6 +299,9 @@ static void *hilo_aceptar_transferencias(void *arg) {
     return NULL;
 }
 
+// Crea y configura un socket TCP en el puerto indicado para recibir solicitudes GET de otros clientes.
+// Recibe: el puerto donde el cliente publicara su servidor de transferencia.
+// Devuelve: el file descriptor del socket en escucha, o -1 si no se pudo crear, enlazar, o poner en escucha.
 static int crear_socket_escucha(uint16_t puerto) {
     int fd;
     int opt = 1;
@@ -319,6 +332,9 @@ static int crear_socket_escucha(uint16_t puerto) {
     return fd;
 }
 
+// Lee exactamente la cantidad de bytes indicada desde un socket, bloqueando hasta recibirlos todos.
+// Recibe: el socket del par que esta enviando datos, el buffer donde guardarlos, y la cantidad exacta esperada.
+// Devuelve: 0 si se recibieron todos los bytes, -1 si la conexion cerro antes o hubo error.
 static int leer_exacto(int fd, unsigned char *buffer, size_t len) {
     size_t total = 0;
 
@@ -340,6 +356,9 @@ static int leer_exacto(int fd, unsigned char *buffer, size_t len) {
     return 0;
 }
 
+// Abre una conexion TCP hacia un par de la red para descargarle un rango de archivo.
+// Recibe: el endpoint del par con su IP y puerto de transferencia.
+// Devuelve: el file descriptor del socket conectado, o -1 si la conexion fallo.
 static int conectar_par(const punto_red_p2p_t *par) {
     struct addrinfo hints;
     struct addrinfo *resultados = NULL;
@@ -372,6 +391,9 @@ static int conectar_par(const punto_red_p2p_t *par) {
     return fd;
 }
 
+// Verifica si un archivo en disco coincide exactamente con el tamano y hash esperados.
+// Recibe: la ruta del archivo a verificar, el tamano esperado en bytes, y el hash esperado en hexadecimal.
+// Devuelve: 1 si el archivo existe y coincide, 0 si no existe, -1 si existe pero no coincide o no se pudo verificar.
 static int archivo_calza_con_pedido(const char *ruta, uint64_t tamano, const char *hash) {
     struct stat st;
     char actual_hash[P2P_HASH_STR_LEN];
@@ -388,6 +410,9 @@ static int archivo_calza_con_pedido(const char *ruta, uint64_t tamano, const cha
     return strcmp(actual_hash, hash) == 0 ? 1 : -1;
 }
 
+// Construye la ruta del archivo temporal de descarga agregando la extension ".part" a la ruta final.
+// Recibe: donde guardar la ruta parcial armada, el tamano de ese buffer, y la ruta definitiva del archivo.
+// Devuelve: 0 si la ruta parcial cabia en el buffer, -1 si resultaba demasiado larga.
 static int armar_ruta_parcial(char *out, size_t out_size, const char *ruta) {
     int written = snprintf(out, out_size, "%s.part", ruta);
 
@@ -397,6 +422,15 @@ static int armar_ruta_parcial(char *out, size_t out_size, const char *ruta) {
     return 0;
 }
 
+// Descarga el archivo completo desde un unico par usando el protocolo GET, verificando hash al final.
+// Recibe: el contexto del cliente con la carpeta de destino,
+//         el par desde el que descargar con su IP y puerto,
+//         el tamano exacto del archivo a descargar,
+//         el hash esperado del archivo,
+//         el buffer donde escribir la ruta donde quedo guardado el archivo,
+//         el tamano de ese buffer,
+//         y donde indicar si el archivo ya existia previamente.
+// Devuelve: 0 si la descarga fue exitosa o el archivo ya existia, -1 si hubo algun fallo.
 int descargar_de_par(const contexto_cliente_p2p_t *contexto,
                                 const punto_red_p2p_t *par,
                                 uint64_t tamano,
@@ -526,6 +560,9 @@ typedef struct {
     int result;
 } range_download_t;
 
+// Crea en disco un archivo vacio del tamano indicado, reservando el espacio para una descarga segmentada.
+// Recibe: la ruta donde crear el archivo, y el tamano en bytes que debe tener.
+// Devuelve: 0 si el archivo se creo y reservo correctamente, -1 si no se pudo crear o reservar espacio.
 static int crear_archivo_vacio(const char *ruta, uint64_t tamano) {
     int fd = open(ruta, O_CREAT | O_TRUNC | O_WRONLY, 0600);
 
@@ -541,6 +578,14 @@ static int crear_archivo_vacio(const char *ruta, uint64_t tamano) {
     return 0;
 }
 
+// Descarga un rango especifico de bytes desde un par y los escribe en la posicion correcta del archivo parcial.
+// Recibe: el par desde el que descargar con su IP y puerto,
+//         el tamano total del archivo (para el mensaje GET),
+//         el hash del archivo (para el mensaje GET),
+//         el byte de inicio del rango a descargar,
+//         la cantidad de bytes del rango,
+//         y la ruta del archivo parcial compartido donde escribir los bytes recibidos.
+// Devuelve: 0 si el rango se descargo y escribio correctamente, -1 si hubo cualquier fallo.
 static int download_range_to_path(const punto_red_p2p_t *par,
                                   uint64_t tamano,
                                   const char *hash,
@@ -617,6 +662,9 @@ static int download_range_to_path(const punto_red_p2p_t *par,
     return 0;
 }
 
+// Ejecuta en su propio hilo la descarga de un rango del archivo desde el par asignado.
+// Recibe: un range_download_t con el par, el rango a descargar, y la ruta del archivo parcial compartido.
+// Devuelve: NULL siempre; escribe el resultado de la descarga en el campo result del argumento.
 static void *hilo_descarga_rango(void *arg) {
     range_download_t *range = arg;
 
@@ -626,6 +674,11 @@ static void *hilo_descarga_rango(void *arg) {
     return NULL;
 }
 
+// Verifica que el archivo parcial sea correcto y lo renombra atomicamente a su ruta final.
+// Recibe: la ruta del archivo parcial a validar e instalar,
+//         la ruta definitiva donde debe quedar el archivo,
+//         el tamano esperado, y el hash esperado para validarlo.
+// Devuelve: 0 si el archivo fue validado e instalado correctamente, -1 si la validacion fallo o el link no se pudo crear.
 static int install_partial_file(const char *partial_path,
                                 const char *ruta,
                                 uint64_t tamano,
@@ -642,6 +695,15 @@ static int install_partial_file(const char *partial_path,
     return 0;
 }
 
+// Descarga un archivo distribuyendo el trabajo entre multiples pares en paralelo, cada uno con un rango diferente.
+// Recibe: el contexto del cliente con la carpeta de destino,
+//         la lista de pares candidatos y cuantos hay,
+//         el tamano exacto del archivo a descargar,
+//         el hash esperado del archivo,
+//         el buffer donde escribir la ruta donde quedo guardado el archivo y su tamano,
+//         donde indicar si el archivo ya existia previamente,
+//         y donde indicar si la descarga fue segmentada entre multiples pares.
+// Devuelve: 0 si la descarga fue exitosa o el archivo ya existia, -1 si algun rango fallo y no pudo recuperarse.
 int descargar_de_pares(const contexto_cliente_p2p_t *contexto,
                                  const punto_red_p2p_t *pares,
                                  size_t cantidad_pares,
@@ -782,6 +844,9 @@ int descargar_de_pares(const contexto_cliente_p2p_t *contexto,
     return 0;
 }
 
+// Inicia el servidor de transferencia del cliente en un hilo de fondo, dejandolo listo para recibir GET de otros pares.
+// Recibe: el contexto del cliente con el puerto de transferencia donde escuchar y los archivos disponibles para servir.
+// Devuelve: 0 si el servidor arranco correctamente, -1 si no se pudo crear el socket o el hilo.
 int iniciar_servidor_transferencia(const contexto_cliente_p2p_t *contexto) {
     servidor_transferencia_t *servidor;
     pthread_t hilo;

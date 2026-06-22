@@ -1,12 +1,5 @@
 /*
  * hash.c - Funcion de hash propia basada en el contenido del archivo.
- *
- * Documentacion de funciones:
- * rotar_izquierda64: hace una rotacion de bits; recibe un valor y bits; ayuda al hash propio.
- * iniciar_hash_p2p: inicia el estado del hash; recibe el estado; ayuda a identificar archivos por contenido.
- * actualizar_hash_p2p: mezcla bytes al hash; recibe estado, datos y largo; calcula el hash sin bibliotecas.
- * cerrar_hash_hex_p2p: pasa el hash a hexadecimal; recibe estado y salida; produce el identificador del archivo.
- * calcular_hash_archivo: calcula el hash de un archivo; recibe ruta y salida; permite reconocer archivos aunque cambien de nombre.
  */
 
 #include "hash.h"
@@ -19,10 +12,16 @@
 #define P2P_HASH_PRIME_A 1099511628211ULL
 #define P2P_HASH_PRIME_B 14029467366897019727ULL
 
+// Rota los bits de un valor de 64 bits hacia la izquierda una cantidad dada de posiciones.
+// Recibe: el valor sobre el que operar, y cuantas posiciones rotar.
+// Devuelve: el valor con sus bits rotados, usado internamente para mezclar el estado del hash.
 static uint64_t rotar_izquierda64(uint64_t value, unsigned int bits) {
     return (value << bits) | (value >> (64U - bits));
 }
 
+// Inicializa el estado del hash con los valores de offset predefinidos, listos para recibir datos.
+// Recibe: el estado del hash a inicializar.
+// Devuelve: nada; modifica el estado en el lugar.
 void iniciar_hash_p2p(hash_p2p_t *hash) {
     if (hash == NULL) {
         return;
@@ -32,6 +31,9 @@ void iniciar_hash_p2p(hash_p2p_t *hash) {
     hash->low = P2P_HASH_OFFSET_B;
 }
 
+// Incorpora un bloque de bytes al estado del hash, mezclando cada byte con rotaciones y multiplicaciones.
+// Recibe: el estado del hash acumulado hasta ahora, los bytes a incorporar, y la cantidad de bytes a procesar.
+// Devuelve: nada; actualiza el estado del hash en el lugar.
 void actualizar_hash_p2p(hash_p2p_t *hash, const unsigned char *datos, size_t len) {
     size_t i;
 
@@ -52,6 +54,9 @@ void actualizar_hash_p2p(hash_p2p_t *hash, const unsigned char *datos, size_t le
     }
 }
 
+// Convierte el estado final del hash en una cadena hexadecimal de 32 caracteres.
+// Recibe: el estado del hash ya finalizado, y el buffer donde escribir la cadena hexadecimal.
+// Devuelve: nada; escribe el identificador del archivo en el buffer de salida.
 void cerrar_hash_hex_p2p(const hash_p2p_t *hash, char out[P2P_HASH_STR_LEN]) {
     if (hash == NULL || out == NULL) {
         return;
@@ -62,6 +67,9 @@ void cerrar_hash_hex_p2p(const hash_p2p_t *hash, char out[P2P_HASH_STR_LEN]) {
              (unsigned long long)hash->low);
 }
 
+// Calcula el hash de un archivo leyendolo completo en bloques y produce una cadena hexadecimal identificadora.
+// Recibe: la ruta del archivo a hashear, y el buffer donde guardar el hash resultante.
+// Devuelve: 0 si el hash se calculo correctamente, -1 si el archivo no se pudo abrir, leer, o cerrar.
 int calcular_hash_archivo(const char *ruta, char out[P2P_HASH_STR_LEN]) {
     FILE *archivo;
     hash_p2p_t hash;

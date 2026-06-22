@@ -1,15 +1,5 @@
 /*
  * discovery.c - Protocolo de busqueda distribuida.
- *
- * Documentacion de funciones:
- * escribir_todo: envia texto por socket; recibe fd y texto; manda DSEARCH/DRESULT completos.
- * conectar_punto: conecta con un vecino; recibe host y puerto; permite inundar busquedas.
- * entrada_vista_vencida: revisa expiracion; recibe entrada y tiempo actual; limpia IDs viejos.
- * recordar_consulta: guarda ID visto; recibe id y tiempo; evita reenviar duplicados.
- * atender_resultado: guarda DRESULT recibido; recibe linea; entrega resultados al originador.
- * manejar_mensaje_par_distribuido: procesa DSEARCH/DRESULT; recibe contexto y linea; resuelve mensajes entre clientes.
- * manejar_mensaje_par_distribuido_en_momento: version con tiempo fijo; recibe contexto, linea y tiempo; permite probar expiracion.
- * buscar_en_vecinos: inicia busqueda distribuida; recibe contexto, termino y salidas; resuelve find -d.
  */
 
 #include "discovery.h"
@@ -61,7 +51,9 @@ static estado_consultas_vistas_t consultas_vistas = {
     PTHREAD_MUTEX_INITIALIZER, {{0, 0}}, 0
 };
 
-
+// Envia un texto completo por socket, reintentando si el sistema operativo manda menos bytes de los pedidos.
+// Recibe: el socket de destino, y el texto a enviar (mensajes DSEARCH o DRESULT del protocolo distribuido).
+// Devuelve: 0 si se envio todo, -1 si hubo error de red.
 static int escribir_todo(int fd, const char *texto) {
     size_t total = 0;
     size_t largo = strlen(texto);
@@ -80,6 +72,9 @@ static int escribir_todo(int fd, const char *texto) {
     return 0;
 }
 
+// Abre una conexion TCP hacia un vecino de la red P2P para enviarle mensajes de busqueda o resultado.
+// Recibe: la direccion IP del vecino, y su puerto de transferencia.
+// Devuelve: el file descriptor del socket conectado, o -1 si la conexion fallo.
 static int conectar_punto(const char *host, uint16_t puerto) {
     struct addrinfo hints;
     struct addrinfo *addresses = NULL;
@@ -110,11 +105,17 @@ static int conectar_punto(const char *host, uint16_t puerto) {
     return fd;
 }
 
+// Indica si una entrada del historial de consultas ya supero el tiempo de vida permitido.
+// Recibe: la entrada del historial con el momento en que fue vista, y el tiempo actual para comparar.
+// Devuelve: 1 si la entrada esta vencida y puede eliminarse, 0 si todavia es valida.
 static int entrada_vista_vencida(const entrada_consulta_vista_t *entrada, time_t ahora) {
     return ahora >= entrada->visto_en &&
            ahora - entrada->visto_en >= P2P_SEEN_QUERY_TTL_SECONDS;
 }
 
+// Registra un ID de consulta como ya visto para evitar reenviar busquedas duplicadas.
+// Recibe: el identificador unico de la consulta a registrar, y el momento actual para marcar cuando fue vista.
+// Devuelve: 1 si el ID es nuevo y fue registrado, 0 si ya habia sido visto antes.
 static int recordar_consulta(unsigned long long id_consulta, time_t ahora) {
     size_t oldest = 0;
 
@@ -144,6 +145,11 @@ static int recordar_consulta(unsigned long long id_consulta, time_t ahora) {
     return 1;
 }
 
+// Reenv??a un DSEARCH a todos los vecinos del cliente, reduciendo el TTL en uno.
+// Recibe: el contexto con la lista de vecinos, el ID de la consulta original,
+//         la IP y puerto del cliente que origino la busqueda, el TTL que viajara en el mensaje,
+//         y el termino que se esta buscando.
+// Devuelve: nada.
 static void reenviar_busqueda(const contexto_cliente_p2p_t *contexto,
                            unsigned long long id_consulta,
                            const char *origin_ip,
@@ -165,6 +171,12 @@ static void reenviar_busqueda(const contexto_cliente_p2p_t *contexto,
     }
 }
 
+// Envia un DRESULT al cliente que origino la busqueda, indicando que este nodo tiene el archivo pedido.
+// Recibe: el contexto del nodo actual con su IP y puerto de transferencia,
+//         el ID de la consulta a la que se responde,
+//         la IP y puerto del cliente que inicio la busqueda,
+//         y los metadatos del archivo encontrado.
+// Devuelve: nada.
 static void enviar_resultado(const contexto_cliente_p2p_t *contexto,
                         unsigned long long id_consulta,
                         const char *origin_ip,
@@ -183,6 +195,12 @@ static void enviar_resultado(const contexto_cliente_p2p_t *contexto,
     close(fd);
 }
 
+// Procesa un mensaje DSEARCH recibido de otro cliente: verifica duplicados, busca el archivo localmente,
+// responde si lo tiene, y reenv??a la busqueda a los vecinos si el TTL lo permite.
+// Recibe: el contexto del cliente con archivos locales y vecinos,
+//         la linea del mensaje DSEARCH recibido,
+//         y el momento actual para la deduplicacion de consultas.
+// Devuelve: 1 siempre (indica que el mensaje fue reconocido como DSEARCH).
 static int atender_busqueda_distribuida(const contexto_cliente_p2p_t *contexto,
                          const char *linea,
                          time_t ahora) {
@@ -216,6 +234,9 @@ static int atender_busqueda_distribuida(const contexto_cliente_p2p_t *contexto,
     return 1;
 }
 
+// Procesa un mensaje DRESULT recibido con un resultado de busqueda distribuida y lo guarda si corresponde a la consulta activa.
+// Recibe: la linea del mensaje DRESULT con el ID de consulta, tamano, hash, nombre del archivo y datos del dueno.
+// Devuelve: 1 siempre (indica que el mensaje fue reconocido como DRESULT).
 static int atender_resultado(const char *linea) {
     unsigned long long id_consulta;
     unsigned long long tamano;
@@ -250,6 +271,11 @@ static int atender_resultado(const char *linea) {
     return 1;
 }
 
+// Determina si una linea recibida es un mensaje distribuido (DSEARCH o DRESULT) y lo procesa con un timestamp dado.
+// Recibe: el contexto del cliente con archivos y vecinos,
+//         la linea del mensaje entrante,
+//         y el momento actual que se usara para la deduplicacion de consultas.
+// Devuelve: 1 si la linea era un mensaje distribuido reconocido, 0 si no era DSEARCH ni DRESULT.
 int manejar_mensaje_par_distribuido_en_momento(const contexto_cliente_p2p_t *contexto,
                                        const char *linea,
                                        time_t ahora) {
@@ -265,11 +291,21 @@ int manejar_mensaje_par_distribuido_en_momento(const contexto_cliente_p2p_t *con
     return 0;
 }
 
+// Determina si una linea recibida es un mensaje distribuido (DSEARCH o DRESULT) y lo procesa con el tiempo real actual.
+// Recibe: el contexto del cliente con archivos y vecinos, y la linea del mensaje entrante.
+// Devuelve: 1 si la linea era un mensaje distribuido reconocido, 0 si no era DSEARCH ni DRESULT.
 int manejar_mensaje_par_distribuido(const contexto_cliente_p2p_t *contexto,
                                     const char *linea) {
     return manejar_mensaje_par_distribuido_en_momento(contexto, linea, time(NULL));
 }
 
+// Inicia una busqueda distribuida por nombre entre los vecinos y espera un tiempo fijo para recibir resultados.
+// Recibe: el contexto del cliente con la lista de vecinos y su IP/puerto local,
+//         el nombre del archivo a buscar,
+//         el arreglo donde guardar los metadatos de los archivos encontrados,
+//         cuantos resultados caben en ese arreglo,
+//         y donde escribir cuantos resultados se recibieron.
+// Devuelve: 0 si la busqueda se inicio correctamente (aunque no haya resultados), -1 si los argumentos son invalidos.
 int buscar_en_vecinos(const contexto_cliente_p2p_t *contexto,
                                  const char *termino,
                                  metadato_archivo_p2p_t *resultados,
