@@ -54,4 +54,25 @@ read -r line <&5
 exec 5<&-
 exec 5>&-
 
+exec 6<>"/dev/tcp/127.0.0.1/$PORT"
+printf 'REGISTER 41002 1 192.0.2.10\nFILE 9 11111111111111111111111111111111 vm.txt\nEND\n' >&6
+read -r line <&6
+[ "$line" = "OK registrado 1 archivos" ]
+while [ "$line" != "END" ]; do
+    read -r line <&6
+done
+exec 6<&-
+exec 6>&-
+
+exec 7<>"/dev/tcp/127.0.0.1/$PORT"
+printf 'FIND vm.txt\n' >&7
+read -r line <&7
+[ "$line" = "PEERS 1" ]
+read -r line <&7
+[ "$line" = "PEER 192.0.2.10 41002" ]
+read -r line <&7
+[ "$line" = "END" ]
+exec 7<&-
+exec 7>&-
+
 printf 'protocolo del servidor ok\n'

@@ -60,8 +60,11 @@ Servidor:
 Cliente:
 
 ```bash
-./bin/client <ip_servidor> <puerto_servidor> <puerto_transferencia> <carpeta_compartida>
+./bin/client <ip_servidor> <puerto_servidor> <puerto_transferencia> <carpeta_compartida> [ip_anunciada]
 ```
+
+`ip_anunciada` es opcional. Se usa cuando el cliente esta detras de NAT y los
+otros pares deben conectarse a una IPv4 distinta de la que observa el servidor.
 
 Ejemplo:
 
@@ -70,6 +73,117 @@ Ejemplo:
 ./bin/client 127.0.0.1 39090 41001 /tmp/p2p-a
 ./bin/client 127.0.0.1 39090 41002 /tmp/p2p-b
 ```
+
+### Computadora y VM con adaptador puente (recomendado)
+
+`127.0.0.1` solo sirve cuando servidor y cliente corren en la misma maquina. Para
+dos maquinas, ambos clientes deben usar la IP LAN de la computadora que ejecuta
+el servidor, por ejemplo `192.168.1.20`:
+
+```bash
+# Computadora normal (IP 192.168.1.20)
+./bin/server 39090
+./bin/client 192.168.1.20 39090 41001 Carpetas/Carpeta1
+
+# VM en otra terminal (por ejemplo, IP 192.168.1.30)
+./bin/client 192.168.1.20 39090 41002 Carpetas/Carpeta2
+```
+
+La maquina virtual debe usar red **puente (bridged)** para obtener una IP
+alcanzable desde la computadora. En este modo no hace falta `ip_anunciada`: el
+servidor observa y publica `192.168.1.30` automaticamente.
+
+El firewall de la computadora debe permitir TCP `39090` y `41001`; el de la VM
+debe permitir TCP `41002`. El servidor y los clientes escuchan en todas las
+interfaces IPv4 (`0.0.0.0`).
+
+Comprobacion minima desde la otra maquina:
+
+```bash
+nc -vz 192.168.1.20 39090   # puerto central
+nc -vz <ip-del-cliente> 41001  # puerto P2P del cliente
+```
+
+### VM con NAT y reenvio de puerto
+
+Si no se puede usar modo puente, hay que reenviar el puerto P2P del host hacia
+la VM y usar el nuevo argumento `ip_anunciada`. Para VirtualBox, con la VM
+apagada y reemplazando `NombreVM`:
+
+```bash
+VBoxManage modifyvm "NombreVM" --natpf1 "p2p-vm,tcp,,41002,,41002"
+```
+
+Suponiendo que el servidor corre en el host, que la IP LAN del host es
+`192.168.1.20` y que VirtualBox lo expone dentro de la VM como `10.0.2.2`:
+
+```bash
+# Dentro de la VM: el ultimo argumento es la IP que se publicara a los pares
+./bin/client 10.0.2.2 39090 41002 Carpetas/Carpeta2 192.168.1.20
+```
+
+El puerto externo y el puerto P2P deben coincidir (`41002` en el ejemplo). Si se
+usa VMware, QEMU u otro hipervisor, se configura el mismo mapeo TCP en su interfaz
+y se pasa como `ip_anunciada` la IPv4 del host que recibe ese puerto. Cada cliente
+detras del mismo NAT necesita un puerto externo diferente.
+
+Al arrancar, comprobar que el cliente imprime el endpoint esperado:
+
+```text
+endpoint P2P anunciado: 192.168.1.20:41002
+```
+
+### Replicar una descarga de Carpeta1 a Carpeta2
+
+Desde la raiz del proyecto, preparar las carpetas y un archivo fuente:
+
+```bash
+mkdir -p Carpetas/Carpeta1 Carpetas/Carpeta2
+printf 'archivo para probar P2P\n' > Carpetas/Carpeta1/prueba.txt
+make
+```
+
+Abrir tres terminales. En la primera:
+
+```bash
+./bin/server 39090
+```
+
+En la segunda, iniciar el cliente que comparte `Carpeta1`:
+
+```bash
+./bin/client 127.0.0.1 39090 41001 Carpetas/Carpeta1
+```
+
+En su consola ejecutar `archivos` y copiar el tamano y hash de `prueba.txt`:
+
+```text
+p2p> archivos
+24 <HASH_MOSTRADO> prueba.txt
+```
+
+En la tercera terminal, iniciar el cliente de destino:
+
+```bash
+./bin/client 127.0.0.1 39090 41002 Carpetas/Carpeta2
+```
+
+Buscar y descargar usando el tamano y hash exactos mostrados por `archivos`:
+
+```text
+p2p> find -s prueba.txt
+p2p> request 24 <HASH_MOSTRADO>
+```
+
+El destino usa el hash como nombre. Verificar el contenido reemplazando el hash:
+
+```bash
+cmp Carpetas/Carpeta1/prueba.txt Carpetas/Carpeta2/<HASH_MOSTRADO>
+```
+
+Para repetirlo entre computadora y VM, se usan los mismos comandos pero con las
+IPs y puertos de las secciones anteriores; `Carpeta1` puede estar en el host y
+`Carpeta2` dentro de la VM.
 
 ## Comandos del cliente
 
@@ -87,7 +201,9 @@ Sirve para copiar el tamano y hash que luego se usan con `request`.
 
 Muestra los vecinos que el servidor devolvio al momento del registro.
 
-Estos vecinos son los clientes recientes que se usan para `find -d`.
+Antes de mostrarlos, el cliente renueva su registro para incluir clientes que
+hayan arrancado despues. Estos vecinos recientes se usan para `find -d`, que
+tambien hace esa actualizacion automaticamente.
 
 ### `find -s <nombre>`
 
@@ -168,7 +284,7 @@ Se guarda con el hash como nombre porque `request <S> <H>` no incluye nombre de 
 Cliente a servidor:
 
 ```text
-REGISTER <puerto_transferencia> <cantidad_archivos>
+REGISTER <puerto_transferencia> <cantidad_archivos> [ip_anunciada]
 FILE <tamano> <hash> <nombre>
 END
 FIND <nombre>

@@ -79,14 +79,17 @@ ALPHA_HASH="$(awk '$NF == "alpha.txt" { print $(NF - 1); exit }' "$CLIENT_LOG")"
 SEARCH_DIR="$SHARED_DIR/search-client"
 SEARCH_LOG="$SHARED_DIR/search-client.log"
 mkdir "$SEARCH_DIR"
-printf 'find -d alpha.txt\nfind -d missing.txt\nquit\n' |
-    "$ROOT_DIR/bin/client" 127.0.0.1 "$PORT" "$SEARCH_PORT" "$SEARCH_DIR" \
+printf 'find -d alpha.txt\nfind -d missing.txt\nrequest %s %s\nquit\n' \
+    "$ALPHA_SIZE" "$ALPHA_HASH" |
+    "$ROOT_DIR/bin/client" 127.0.0.1 "$PORT" "$SEARCH_PORT" "$SEARCH_DIR" 127.0.0.1 \
     > "$SEARCH_LOG" 2>&1
 
 grep -q "recibidos 1 vecinos" "$SEARCH_LOG"
 grep -q "resultados distribuidos para alpha.txt: 1" "$SEARCH_LOG"
 grep -q "$ALPHA_SIZE $ALPHA_HASH alpha.txt 127.0.0.1 $CLIENT_PORT" "$SEARCH_LOG"
 grep -q "no hay resultados distribuidos para missing.txt" "$SEARCH_LOG"
+grep -q "descargado $ALPHA_SIZE $ALPHA_HASH en $SEARCH_DIR/$ALPHA_HASH" "$SEARCH_LOG"
+cmp -s "$SHARED_DIR/alpha.txt" "$SEARCH_DIR/$ALPHA_HASH"
 
 
 printf 'find -s alpha.txt\nfind -s missing.txt\n' >&8

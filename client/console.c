@@ -209,6 +209,9 @@ void correr_consola_cliente(contexto_cliente_p2p_t *contexto) {
             continue;
         }
         if (strcmp(linea, "vecinos") == 0) {
+            if (actualizar_registro_servidor(contexto) != 0) {
+                printf("no se pudo actualizar la lista de vecinos\n");
+            }
             mostrar_vecinos(contexto);
             continue;
         }
@@ -217,6 +220,9 @@ void correr_consola_cliente(contexto_cliente_p2p_t *contexto) {
             continue;
         }
         if (strncmp(linea, "find -d ", 8) == 0) {
+            if (actualizar_registro_servidor(contexto) != 0) {
+                printf("no se pudo actualizar la lista de vecinos\n");
+            }
             handle_find_distributed(contexto, linea + 8);
             continue;
         }

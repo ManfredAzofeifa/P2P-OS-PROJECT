@@ -21,7 +21,7 @@
  * except hashes, which are fixed-width lowercase hexadecimal strings.
  *
  * Client -> Server
- *   REGISTER <transfer_port> <file_count>
+ *   REGISTER <transfer_port> <file_count> [advertised_ipv4]
  *   FILE <size> <hash> <name>
  *   END
  *   FIND <name>

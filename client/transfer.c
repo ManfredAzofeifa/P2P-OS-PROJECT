@@ -537,11 +537,16 @@ int descargar_de_par(const contexto_cliente_p2p_t *contexto,
         unlink(partial_path);
         return -1;
     }
-    if (link(partial_path, ruta) != 0) {
+    /*
+     * El archivo parcial vive en la misma carpeta que el destino. rename(2)
+     * lo instala atomicamente sin depender de enlaces duros, que no estan
+     * disponibles en varios sistemas de archivos compartidos por maquinas
+     * virtuales (vboxsf, algunos montajes 9p, etc.).
+     */
+    if (rename(partial_path, ruta) != 0) {
         unlink(partial_path);
         return -1;
     }
-    unlink(partial_path);
 
     if (ruta_guardada != NULL && tamano_ruta_guardada > 0) {
         snprintf(ruta_guardada, tamano_ruta_guardada, "%s", ruta);
@@ -678,7 +683,7 @@ static void *hilo_descarga_rango(void *arg) {
 // Recibe: la ruta del archivo parcial a validar e instalar,
 //         la ruta definitiva donde debe quedar el archivo,
 //         el tamano esperado, y el hash esperado para validarlo.
-// Devuelve: 0 si el archivo fue validado e instalado correctamente, -1 si la validacion fallo o el link no se pudo crear.
+// Devuelve: 0 si el archivo fue validado e instalado correctamente, -1 si la validacion o el renombrado fallo.
 static int install_partial_file(const char *partial_path,
                                 const char *ruta,
                                 uint64_t tamano,
@@ -687,11 +692,10 @@ static int install_partial_file(const char *partial_path,
         unlink(partial_path);
         return -1;
     }
-    if (link(partial_path, ruta) != 0) {
+    if (rename(partial_path, ruta) != 0) {
         unlink(partial_path);
         return -1;
     }
-    unlink(partial_path);
     return 0;
 }
 

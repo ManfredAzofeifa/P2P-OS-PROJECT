@@ -274,8 +274,8 @@ static int leer_vecinos(int fd, contexto_cliente_p2p_t *contexto) {
 
 // Conecta al servidor y envia el mensaje REGISTER con todos los archivos locales para publicarlos en la red.
 // Recibe: el contexto del cliente con la IP del servidor, los puertos, y la lista de archivos a registrar.
-// Devuelve: 0 si el servidor respondio OK y se recibieron los vecinos, -1 si hubo algun fallo.
-static int registrar_con_servidor(contexto_cliente_p2p_t *contexto) {
+// Devuelve: 0 si el servidor respondio OK y se actualizaron los vecinos, -1 si hubo algun fallo.
+int actualizar_registro_servidor(contexto_cliente_p2p_t *contexto) {
     int fd;
     char linea[P2P_MAX_LINE];
     struct sockaddr_storage local_addr;
@@ -287,7 +287,8 @@ static int registrar_con_servidor(contexto_cliente_p2p_t *contexto) {
                 contexto->ip_servidor, contexto->puerto_servidor);
         return -1;
     }
-    if (getsockname(fd, (struct sockaddr *)&local_addr, &local_addr_len) == 0) {
+    if (!contexto->usar_ip_anunciada &&
+        getsockname(fd, (struct sockaddr *)&local_addr, &local_addr_len) == 0) {
         void *address = NULL;
         if (local_addr.ss_family == AF_INET) {
             address = &((struct sockaddr_in *)&local_addr)->sin_addr;
@@ -301,8 +302,14 @@ static int registrar_con_servidor(contexto_cliente_p2p_t *contexto) {
     }
 
 
-    snprintf(linea, sizeof(linea), "REGISTER %u %zu\n",
-             contexto->puerto_transferencia, contexto->cantidad_archivos);
+    if (contexto->usar_ip_anunciada) {
+        snprintf(linea, sizeof(linea), "REGISTER %u %zu %s\n",
+                 contexto->puerto_transferencia, contexto->cantidad_archivos,
+                 contexto->ip_local);
+    } else {
+        snprintf(linea, sizeof(linea), "REGISTER %u %zu\n",
+                 contexto->puerto_transferencia, contexto->cantidad_archivos);
+    }
     if (escribir_todo(fd, linea) != 0) {
         close(fd);
         return -1;
@@ -344,6 +351,8 @@ static int registrar_con_servidor(contexto_cliente_p2p_t *contexto) {
     close(fd);
     printf("registrados %zu archivos con %s:%u\n",
            contexto->cantidad_archivos, contexto->ip_servidor, contexto->puerto_servidor);
+    printf("endpoint P2P anunciado: %s:%u\n",
+           contexto->ip_local, contexto->puerto_transferencia);
     printf("recibidos %zu vecinos\n", contexto->cantidad_vecinos);
     return 0;
 }
@@ -483,16 +492,16 @@ int buscar_hash_en_servidor(const contexto_cliente_p2p_t *contexto,
     return -1;
 }
 
-// Punto de entrada del cliente P2P: valida argumentos, carga archivos locales, se registra con el servidor,
-// e inicia el servidor de transferencia y la consola interactiva.
-// Recibe: los argumentos de linea de comandos: IP del servidor, puerto del servidor,
-//         puerto de transferencia, y ruta de la carpeta compartida.
+// Punto de entrada del cliente P2P: valida argumentos, carga archivos locales, abre primero el servidor
+// de transferencia, registra en el servidor central un endpoint ya alcanzable, e inicia la consola.
+// Recibe: IP y puerto del servidor, puerto P2P, carpeta compartida y, opcionalmente,
+//         la IP IPv4 publica que otros pares deben usar para alcanzar este cliente.
 // Devuelve: 0 si termino correctamente, 1 si hubo error en ejecucion, 2 si los argumentos son invalidos.
 int main(int argc, char **argv) {
     contexto_cliente_p2p_t contexto;
 
-    if (argc != 5) {
-        fprintf(stderr, "uso: %s <ip_servidor> <puerto_servidor> <puerto_transferencia> <carpeta_compartida>\n",
+    if (argc != 5 && argc != 6) {
+        fprintf(stderr, "uso: %s <ip_servidor> <puerto_servidor> <puerto_transferencia> <carpeta_compartida> [ip_anunciada]\n",
                 argv[0]);
         return 2;
     }
@@ -511,16 +520,27 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    revisar_carpeta_compartida(&contexto);
+    if (argc == 6) {
+        struct in_addr ipv4;
 
-    if (registrar_con_servidor(&contexto) != 0) {
-        return 1;
+        if (inet_pton(AF_INET, argv[5], &ipv4) != 1) {
+            fprintf(stderr, "IP anunciada invalida (debe ser IPv4): %s\n", argv[5]);
+            return 2;
+        }
+        snprintf(contexto.ip_local, sizeof(contexto.ip_local), "%s", argv[5]);
+        contexto.usar_ip_anunciada = 1;
     }
+
+    revisar_carpeta_compartida(&contexto);
 
     signal(SIGPIPE, SIG_IGN);
 
     if (iniciar_servidor_transferencia(&contexto) != 0) {
         fprintf(stderr, "cannot start transfer servidor on puerto %u\n", contexto.puerto_transferencia);
+        return 1;
+    }
+
+    if (actualizar_registro_servidor(&contexto) != 0) {
         return 1;
     }
 

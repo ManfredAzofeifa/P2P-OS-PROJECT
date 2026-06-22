@@ -109,15 +109,25 @@ static int escribir_todo(int fd, const char *texto) {
 
 // Extrae la direccion IP y asigna el puerto de transferencia desde la direccion de socket de un cliente.
 // Recibe: la direccion de socket del cliente recien conectado, el puerto de transferencia que el cliente declaro,
-//         y el endpoint donde guardar la IP convertida y el puerto.
-// Devuelve: nada; rellena el endpoint con los datos del cliente.
-static void punto_desde_sockaddr(const struct sockaddr_storage *addr,
-                                   uint16_t puerto_transferencia,
-                                   punto_red_p2p_t *endpoint) {
+//         una IP IPv4 anunciada opcionalmente, y el endpoint donde guardar la IP y el puerto.
+// Devuelve: 0 si pudo construir un endpoint valido, -1 si la IP anunciada era invalida.
+static int punto_desde_sockaddr(const struct sockaddr_storage *addr,
+                                uint16_t puerto_transferencia,
+                                const char *ip_anunciada,
+                                punto_red_p2p_t *endpoint) {
     const void *src = NULL;
+    struct in_addr ipv4;
 
     memset(endpoint, 0, sizeof(*endpoint));
     endpoint->puerto = puerto_transferencia;
+
+    if (ip_anunciada != NULL && ip_anunciada[0] != '\0') {
+        if (inet_pton(AF_INET, ip_anunciada, &ipv4) != 1) {
+            return -1;
+        }
+        snprintf(endpoint->ip, sizeof(endpoint->ip), "%s", ip_anunciada);
+        return 0;
+    }
 
     if (addr->ss_family == AF_INET) {
         src = &((const struct sockaddr_in *)addr)->sin_addr;
@@ -127,8 +137,9 @@ static void punto_desde_sockaddr(const struct sockaddr_storage *addr,
 
     if (src == NULL ||
         inet_ntop(addr->ss_family, src, endpoint->ip, sizeof(endpoint->ip)) == NULL) {
-        snprintf(endpoint->ip, sizeof(endpoint->ip), "desconocido");
+        return -1;
     }
+    return 0;
 }
 
 // Compara si dos endpoints (IP + puerto) representan el mismo nodo de la red.
@@ -212,6 +223,8 @@ static void atender_registro(int fd,
                             const char *linea) {
     unsigned int puerto_transferencia;
     unsigned int archivos_esperados;
+    char ip_anunciada[46] = "";
+    int campos_registro;
     punto_red_p2p_t dueno;
     metadato_archivo_p2p_t pendientes[MAX_REGISTERED_FILES];
     size_t cantidad_pendientes = 0;
@@ -219,13 +232,20 @@ static void atender_registro(int fd,
     size_t cantidad_vecinos;
     char respuesta[P2P_MAX_LINE];
 
-    if (sscanf(linea, "REGISTER %u %u", &puerto_transferencia, &archivos_esperados) != 2 ||
+    campos_registro = sscanf(linea, "REGISTER %u %u %45s",
+                             &puerto_transferencia, &archivos_esperados, ip_anunciada);
+    if ((campos_registro != 2 && campos_registro != 3) ||
+        puerto_transferencia == 0 ||
         puerto_transferencia > 65535U) {
         escribir_todo(fd, "ERROR REGISTER invalido\n");
         return;
     }
 
-    punto_desde_sockaddr(addr, (uint16_t)puerto_transferencia, &dueno);
+    if (punto_desde_sockaddr(addr, (uint16_t)puerto_transferencia,
+                             campos_registro == 3 ? ip_anunciada : NULL, &dueno) != 0) {
+        escribir_todo(fd, "ERROR IP anunciada invalida\n");
+        return;
+    }
 
     while (cantidad_pendientes < MAX_REGISTERED_FILES) {
         char file_line[P2P_MAX_LINE];
